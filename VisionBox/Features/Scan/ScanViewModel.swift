@@ -10,9 +10,9 @@ import UIKit
 
 /// Drives the scan flow: pick a photo or a demo scene, analyze, show results.
 ///
-/// Demo scenes run through the same `ObjectDetectionService` seam that live
-/// Gemini analysis will use in a later phase. Personal photos can be selected
-/// and displayed, but not yet analyzed — that requires the Gemini integration.
+/// Demo scenes always run through `DemoDetectionService`; personal photos run
+/// through the live Gemini service, which exists only while the user has a
+/// stored API key. Both sides use the same `ObjectDetectionService` seam.
 @MainActor @Observable
 final class ScanViewModel {
 
@@ -20,8 +20,7 @@ final class ScanViewModel {
         case idle
         /// A Photos selection is being loaded and decoded.
         case loadingPhoto
-        /// A personal photo is loaded and displayed; live analysis becomes
-        /// available with the Gemini integration (next phase).
+        /// A personal photo is loaded and displayed, awaiting live analysis.
         case photoReady(UIImage)
         case analyzing(UIImage)
         case results(image: UIImage, objects: [DetectedObject])
@@ -31,10 +30,19 @@ final class ScanViewModel {
     private(set) var state: State
     /// The in-flight load or analysis, retained so newer actions can cancel it.
     private(set) var analysisTask: Task<Void, Never>?
-    private let detectionService: any ObjectDetectionService
 
-    init(detectionService: any ObjectDetectionService, state: State = .idle) {
-        self.detectionService = detectionService
+    private let demoService: any ObjectDetectionService
+    /// Returns the live Gemini service, or nil while no API key is stored.
+    /// Resolved per call so a key added or removed mid-session takes effect.
+    private let liveService: () -> (any ObjectDetectionService)?
+
+    init(
+        demoService: any ObjectDetectionService,
+        liveService: @escaping () -> (any ObjectDetectionService)?,
+        state: State = .idle
+    ) {
+        self.demoService = demoService
+        self.liveService = liveService
         self.state = state
     }
 
@@ -42,6 +50,11 @@ final class ScanViewModel {
     var canStartOver: Bool {
         if case .idle = state { return false }
         return true
+    }
+
+    /// Whether live Gemini analysis is currently possible (a key is stored).
+    var isLiveAnalysisAvailable: Bool {
+        liveService() != nil
     }
 
     /// Runs a bundled demo scene through the detection seam.
@@ -54,7 +67,7 @@ final class ScanViewModel {
         state = .analyzing(image)
         analysisTask = Task {
             do {
-                let objects = try await detectionService.detectObjects(in: imageData)
+                let objects = try await demoService.detectObjects(in: imageData)
                 guard !Task.isCancelled else { return }
                 state = .results(image: image, objects: objects)
             } catch is CancellationError {
@@ -66,8 +79,37 @@ final class ScanViewModel {
         }
     }
 
-    /// Loads and decodes a Photos selection. The photo is displayed but not
-    /// analyzed — see `State.photoReady`.
+    /// Analyzes the currently selected personal photo with the live Gemini
+    /// service: prepare (orientation-normalize, downscale, JPEG) → detect.
+    func analyzePhoto() {
+        guard case .photoReady(let image) = state else { return }
+        guard let service = liveService() else {
+            // Unreachable through the UI (the button is disabled without a
+            // key), but stays honest if ever called directly.
+            state = .error(DetectionError.missingAPIKey.userMessage)
+            return
+        }
+        analysisTask?.cancel()
+        state = .analyzing(image)
+        analysisTask = Task {
+            do {
+                let imageData = try await ImageProcessing.prepareForUpload(image)
+                let objects = try await service.detectObjects(in: imageData)
+                guard !Task.isCancelled else { return }
+                state = .results(image: image, objects: objects)
+            } catch is CancellationError {
+                // Superseded by a newer action, which already updated the state.
+            } catch let error as DetectionError {
+                guard !Task.isCancelled else { return }
+                state = .error(error.userMessage)
+            } catch {
+                guard !Task.isCancelled else { return }
+                state = .error("The analysis failed. Please try again.")
+            }
+        }
+    }
+
+    /// Loads and decodes a Photos selection into the `photoReady` state.
     func loadPhoto(_ item: PhotosPickerItem) {
         analysisTask?.cancel()
         state = .loadingPhoto

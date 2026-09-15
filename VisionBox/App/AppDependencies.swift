@@ -5,12 +5,23 @@
 
 /// The app's shared services, created once in `VisionBoxApp` and passed down
 /// by constructor injection. Deliberately tiny — no framework, no locator.
+///
+/// There are exactly two detection concepts: Demo Mode (bundled scenes, no
+/// key, no network) and live Gemini analysis for personal photos.
 struct AppDependencies {
-    /// The service behind the analyze flow. Demo Mode ships first; the
-    /// Gemini-backed service for personal photos arrives in the next phase.
-    let detectionService: any ObjectDetectionService
+    let keychain = KeychainService()
 
-    init(detectionService: any ObjectDetectionService = DemoDetectionService()) {
-        self.detectionService = detectionService
+    /// Demo Mode's zero-key detection service.
+    let demoDetectionService: any ObjectDetectionService = DemoDetectionService()
+
+    /// The live Gemini service, available only while an API key is stored.
+    /// Resolved at analyze time so key changes take effect immediately. The
+    /// key is read here and injected — the Gemini service itself never
+    /// touches the Keychain.
+    func liveDetectionService() -> (any ObjectDetectionService)? {
+        guard let apiKey = try? keychain.readAPIKey(), !apiKey.isEmpty else {
+            return nil
+        }
+        return GeminiDetectionService(apiKey: apiKey)
     }
 }
