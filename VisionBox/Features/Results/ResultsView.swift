@@ -16,7 +16,7 @@ struct ResultsView: View {
     /// Single source of truth for selection, shared by the overlay and the
     /// list. It lives outside layout state, so it survives layout changes.
     @State private var selectedObjectID: UUID?
-    @State private var isWideLayout: Bool
+    @State private var containerSize: CGSize
 
     /// Minimum available width at which the side-by-side arrangement is used.
     private static let wideLayoutMinimumWidth: CGFloat = 600
@@ -25,7 +25,11 @@ struct ResultsView: View {
         self.image = image
         self.objects = objects
         self.selectedObjectID = selectedObjectID
-        self.isWideLayout = false
+        self.containerSize = .zero
+    }
+
+    private var isWideLayout: Bool {
+        containerSize.width >= Self.wideLayoutMinimumWidth
     }
 
     var body: some View {
@@ -37,12 +41,16 @@ struct ResultsView: View {
 
         layout {
             annotatedImage
-            objectList
+            if objects.isEmpty {
+                emptyState
+            } else {
+                objectList
+            }
         }
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.width
-        } action: { width in
-            isWideLayout = width >= Self.wideLayoutMinimumWidth
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
+            containerSize = size
         }
     }
 
@@ -55,7 +63,27 @@ struct ResultsView: View {
                 // it maps directly to rendered image coordinates.
                 DetectionOverlay(objects: objects, selectedObjectID: $selectedObjectID)
             }
+            .frame(maxHeight: narrowImageMaxHeight)
             .padding()
+    }
+
+    /// In the narrow (vertical) arrangement, tall portrait images are capped
+    /// to a fraction of the container's own height so the list stays usable.
+    /// The image still fits entirely (`scaledToFit`) — never cropped — and the
+    /// cap derives from this view's available space, never from the device.
+    private var narrowImageMaxHeight: CGFloat? {
+        guard !isWideLayout, containerSize.height > 0 else { return nil }
+        return containerSize.height * 0.55
+    }
+
+    /// Zero detections is a normal outcome, not an error.
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No Objects Detected", systemImage: "magnifyingglass")
+        } description: {
+            Text("Nothing was detected in this image. Try a different photo or demo scene.")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var objectList: some View {
@@ -124,27 +152,42 @@ private struct DetectedObjectRow: View {
             }
         }
         .listRowBackground(isSelected ? Color.accentColor.opacity(0.12) : nil)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 
+// MARK: - Previews
+
 #Preview("Narrow") {
     NavigationStack {
-        ResultsView(image: SampleDetections.image, objects: SampleDetections.objects)
+        ResultsView(image: DemoScene.desk.image ?? UIImage(), objects: DemoScene.desk.detections)
     }
 }
 
 #Preview("Wide", traits: .landscapeLeft) {
     NavigationStack {
-        ResultsView(image: SampleDetections.image, objects: SampleDetections.objects)
+        ResultsView(image: DemoScene.desk.image ?? UIImage(), objects: DemoScene.desk.detections)
     }
 }
 
 #Preview("Selected object") {
     NavigationStack {
         ResultsView(
-            image: SampleDetections.image,
-            objects: SampleDetections.objects,
-            selectedObjectID: SampleDetections.objects[2].id
+            image: DemoScene.desk.image ?? UIImage(),
+            objects: DemoScene.desk.detections,
+            selectedObjectID: DemoScene.desk.detections[2].id
         )
+    }
+}
+
+#Preview("Tall image") {
+    NavigationStack {
+        ResultsView(image: DemoScene.kitchen.image ?? UIImage(), objects: DemoScene.kitchen.detections)
+    }
+}
+
+#Preview("No detections") {
+    NavigationStack {
+        ResultsView(image: DemoScene.desk.image ?? UIImage(), objects: [])
     }
 }
