@@ -65,14 +65,14 @@ struct DetectionOverlay: View {
 }
 
 #Preview {
-    @Previewable @State var selectedObjectID: UUID? = SampleDetections.objects[0].id
+    @Previewable @State var selectedObjectID: UUID? = DemoScene.desk.detections[0].id
 
-    Image(uiImage: SampleDetections.image)
+    Image(uiImage: DemoScene.desk.image ?? UIImage())
         .resizable()
         .scaledToFit()
         .overlay {
             DetectionOverlay(
-                objects: SampleDetections.objects,
+                objects: DemoScene.desk.detections,
                 selectedObjectID: $selectedObjectID
             )
         }

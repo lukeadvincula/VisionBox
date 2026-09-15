@@ -5,8 +5,11 @@
 
 import SwiftUI
 
-/// Placeholder shell establishing where configuration will live.
-/// API key entry (Keychain-backed) and the Demo Mode toggle arrive in later phases.
+/// Settings shell. Gemini API key entry (Keychain-backed) arrives in a later
+/// phase. Demo Mode intentionally has no toggle here yet: with no live
+/// detection service to switch away from, "Try Demo Mode" on the main screen
+/// is the single, obvious entry point. A persistent mode switch becomes
+/// meaningful once the Gemini integration exists.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -19,9 +22,9 @@ struct SettingsView: View {
             }
 
             Section {
-                LabeledContent("Demo Mode", value: "Coming soon")
+                Label("Demo Mode", systemImage: "sparkles")
             } footer: {
-                Text("Demo Mode will let you try VisionBox on sample photos without an API key.")
+                Text("Demo Mode needs no setup — choose “Try Demo Mode” on the main screen to explore VisionBox without an API key or network access.")
             }
         }
         .navigationTitle("Settings")
