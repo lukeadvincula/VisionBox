@@ -3,7 +3,7 @@
 //  VisionBoxTests
 //
 
-import Foundation
+import UIKit
 import Testing
 @testable import VisionBox
 
@@ -25,6 +25,14 @@ private nonisolated struct FailingService: ObjectDetectionService {
     }
 }
 
+private nonisolated struct DetectionErrorService: ObjectDetectionService {
+    let error: DetectionError
+
+    func detectObjects(in imageData: Data) async throws -> [DetectedObject] {
+        throw error
+    }
+}
+
 private nonisolated struct NeverFinishingService: ObjectDetectionService {
     func detectObjects(in imageData: Data) async throws -> [DetectedObject] {
         try await Task.sleep(for: .seconds(60))
@@ -35,9 +43,28 @@ private nonisolated struct NeverFinishingService: ObjectDetectionService {
 @MainActor
 struct ScanViewModelTests {
 
+    private func makeViewModel(
+        demo: any ObjectDetectionService = DemoDetectionService(),
+        live: (any ObjectDetectionService)? = nil,
+        state: ScanViewModel.State = .idle
+    ) -> ScanViewModel {
+        ScanViewModel(demoService: demo, liveService: { live }, state: state)
+    }
+
+    private func tinyImage() -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8), format: format).image { context in
+            UIColor.systemOrange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+    }
+
+    // MARK: - Demo flow
+
     @Test func demoAnalysisMovesThroughAnalyzingToResults() async throws {
         let expected = DemoScene.desk.detections
-        let viewModel = ScanViewModel(detectionService: SucceedingService(objects: expected))
+        let viewModel = makeViewModel(demo: SucceedingService(objects: expected))
 
         viewModel.analyzeDemoScene(.desk)
         guard case .analyzing = viewModel.state else {
@@ -53,8 +80,8 @@ struct ScanViewModelTests {
         #expect(objects == expected)
     }
 
-    @Test func serviceFailureShowsError() async {
-        let viewModel = ScanViewModel(detectionService: FailingService())
+    @Test func demoServiceFailureShowsError() async {
+        let viewModel = makeViewModel(demo: FailingService())
 
         viewModel.analyzeDemoScene(.desk)
         await viewModel.analysisTask?.value
@@ -68,7 +95,7 @@ struct ScanViewModelTests {
     @Test func emptyDetectionsStillProduceResults() async {
         // Zero detections is a normal outcome that drives the empty state,
         // not an error.
-        let viewModel = ScanViewModel(detectionService: SucceedingService(objects: []))
+        let viewModel = makeViewModel(demo: SucceedingService(objects: []))
 
         viewModel.analyzeDemoScene(.kitchen)
         await viewModel.analysisTask?.value
@@ -80,8 +107,66 @@ struct ScanViewModelTests {
         #expect(objects.isEmpty)
     }
 
+    // MARK: - Live photo flow
+
+    @Test func liveAvailabilityFollowsTheInjectedProvider() {
+        #expect(!makeViewModel(live: nil).isLiveAnalysisAvailable)
+        #expect(makeViewModel(live: SucceedingService(objects: [])).isLiveAnalysisAvailable)
+    }
+
+    @Test func analyzePhotoRunsThroughTheLiveService() async throws {
+        let expected = DemoScene.desk.detections
+        let viewModel = makeViewModel(
+            live: SucceedingService(objects: expected),
+            state: .photoReady(tinyImage())
+        )
+
+        viewModel.analyzePhoto()
+        guard case .analyzing = viewModel.state else {
+            Issue.record("Expected .analyzing, got \(viewModel.state)")
+            return
+        }
+
+        await viewModel.analysisTask?.value
+        guard case .results(_, let objects) = viewModel.state else {
+            Issue.record("Expected .results, got \(viewModel.state)")
+            return
+        }
+        #expect(objects == expected)
+    }
+
+    @Test func analyzePhotoWithoutAKeyExplainsInsteadOfPretending() {
+        let viewModel = makeViewModel(live: nil, state: .photoReady(tinyImage()))
+
+        viewModel.analyzePhoto()
+
+        guard case .error(let message) = viewModel.state else {
+            Issue.record("Expected .error, got \(viewModel.state)")
+            return
+        }
+        #expect(message == DetectionError.missingAPIKey.userMessage)
+    }
+
+    @Test func liveFailureSurfacesTheTypedUserMessage() async {
+        let viewModel = makeViewModel(
+            live: DetectionErrorService(error: .rateLimited),
+            state: .photoReady(tinyImage())
+        )
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+
+        guard case .error(let message) = viewModel.state else {
+            Issue.record("Expected .error, got \(viewModel.state)")
+            return
+        }
+        #expect(message == DetectionError.rateLimited.userMessage)
+    }
+
+    // MARK: - Cancellation
+
     @Test func resetCancelsAnalysisAndReturnsToIdle() async throws {
-        let viewModel = ScanViewModel(detectionService: NeverFinishingService())
+        let viewModel = makeViewModel(demo: NeverFinishingService())
 
         viewModel.analyzeDemoScene(.desk)
         let task = try #require(viewModel.analysisTask)
@@ -102,7 +187,7 @@ struct ScanViewModelTests {
     }
 
     @Test func newAnalysisCancelsThePreviousOne() async throws {
-        let viewModel = ScanViewModel(detectionService: NeverFinishingService())
+        let viewModel = makeViewModel(demo: NeverFinishingService())
 
         viewModel.analyzeDemoScene(.desk)
         let firstTask = try #require(viewModel.analysisTask)
