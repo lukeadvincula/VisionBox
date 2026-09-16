@@ -28,6 +28,21 @@ nonisolated enum DetectionError: Error, Equatable {
     /// The selected image couldn't be prepared for upload.
     case imagePreparation
 
+    /// Whether an automatic bounded retry is justified. Only genuinely
+    /// transient service/transport hiccups qualify: auth and request problems
+    /// repeat identically, decode failures shouldn't blindly resend the same
+    /// bytes, and cancellation must never retry.
+    var isTransient: Bool {
+        switch self {
+        case .rateLimited, .server:
+            true
+        case .network(.timedOut), .network(.networkConnectionLost):
+            true
+        case .missingAPIKey, .unauthorized, .network, .invalidResponse, .decoding, .imagePreparation:
+            false
+        }
+    }
+
     var userMessage: String {
         switch self {
         case .missingAPIKey:

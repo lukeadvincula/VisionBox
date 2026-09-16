@@ -187,6 +187,48 @@ struct GeminiResponseTests {
         #expect(GeminiDetectionService.error(forStatusCode: 400, body: body) == .unauthorized)
     }
 
+    // MARK: - Retry policy (pure)
+
+    @Test func transientClassificationDrivesRetryEligibility() {
+        #expect(DetectionError.rateLimited.isTransient)
+        #expect(DetectionError.server(statusCode: 502).isTransient)
+        #expect(DetectionError.network(.timedOut).isTransient)
+        #expect(DetectionError.network(.networkConnectionLost).isTransient)
+
+        #expect(!DetectionError.unauthorized.isTransient)
+        #expect(!DetectionError.missingAPIKey.isTransient)
+        #expect(!DetectionError.decoding.isTransient)
+        #expect(!DetectionError.invalidResponse.isTransient)
+        #expect(!DetectionError.imagePreparation.isTransient)
+        #expect(!DetectionError.network(.notConnectedToInternet).isTransient)
+    }
+
+    @Test func exponentialDelayProgressionIsOneThenTwoSeconds() {
+        #expect(GeminiDetectionService.retryDelay(afterAttempt: 1, retryAfter: nil) == .seconds(1))
+        #expect(GeminiDetectionService.retryDelay(afterAttempt: 2, retryAfter: nil) == .seconds(2))
+    }
+
+    @Test func serverRetryAfterWinsButIsCapped() {
+        #expect(GeminiDetectionService.retryDelay(afterAttempt: 1, retryAfter: .seconds(5)) == .seconds(5))
+        #expect(
+            GeminiDetectionService.retryDelay(afterAttempt: 1, retryAfter: .seconds(3600))
+                == GeminiDetectionService.maxRetryDelay
+        )
+    }
+
+    @Test func retryAfterHeaderParsing() throws {
+        let url = try #require(URL(string: "https://example.com"))
+        func response(_ headers: [String: String]) throws -> HTTPURLResponse {
+            try #require(HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: headers))
+        }
+        #expect(try GeminiDetectionService.retryAfter(from: response(["Retry-After": "5"])) == .seconds(5))
+        #expect(try GeminiDetectionService.retryAfter(from: response(["Retry-After": " 2.5 "])) == .seconds(2.5))
+        #expect(try GeminiDetectionService.retryAfter(from: response(["Retry-After": "soon"])) == nil)
+        #expect(try GeminiDetectionService.retryAfter(from: response(["Retry-After": "-1"])) == nil)
+        #expect(try GeminiDetectionService.retryAfter(from: response([:])) == nil)
+        #expect(GeminiDetectionService.retryAfter(from: nil) == nil)
+    }
+
     @Test func other400BodiesRemainInvalidResponse() {
         let body = Data("""
             { "error": { "code": 400, "status": "INVALID_ARGUMENT", "details": [ { "reason": "SOMETHING_ELSE" } ] } }
@@ -198,64 +240,189 @@ struct GeminiResponseTests {
 }
 
 /// End-to-end through a real URLSession (stubbed transport). Serialized
-/// because the URLProtocol stub's handler is shared global state.
+/// because the URLProtocol stub's handler is shared global state. Retry
+/// tests inject a recording sleep, so nothing here waits in real time.
 @Suite(.serialized)
 struct GeminiTransportTests {
 
-    @Test func fullRequestPathMapsASuccessfulResponse() async throws {
-        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
-        StubURLProtocol.handler = { _ in (200, Fixture.twoObjects) }
-
-        let objects = try await service.detectObjects(in: Data([0x01]))
-        #expect(objects.count == 2)
+    private func makeService(recorder: SleepRecorder? = nil) -> GeminiDetectionService {
+        GeminiDetectionService(
+            apiKey: "TEST-KEY-NOT-REAL",
+            session: StubURLProtocol.makeSession(),
+            sleep: { duration in await recorder?.record(duration) }
+        )
     }
 
-    @Test func fullRequestPathMapsUnauthorizedStatus() async {
-        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
-        StubURLProtocol.handler = { _ in (401, Data()) }
+    // MARK: - Detection retry behavior
+
+    @Test func successOnFirstAttemptMakesExactlyOneRequest() async throws {
+        StubURLProtocol.reset { _, _ in (200, Fixture.twoObjects, [:]) }
+
+        let objects = try await makeService().detectObjects(in: Data([0x01]))
+        #expect(objects.count == 2)
+        #expect(StubURLProtocol.requestCount == 1)
+    }
+
+    @Test func unauthorizedDoesNotRetry() async {
+        StubURLProtocol.reset { _, _ in (401, Data(), [:]) }
 
         await #expect(throws: DetectionError.unauthorized) {
+            _ = try await makeService().detectObjects(in: Data([0x01]))
+        }
+        #expect(StubURLProtocol.requestCount == 1)
+    }
+
+    @Test func invalidAPIKey400DoesNotRetry() async {
+        let body = Data(#"{"error": {"details": [{"reason": "API_KEY_INVALID"}]}}"#.utf8)
+        StubURLProtocol.reset { _, _ in (400, body, [:]) }
+
+        await #expect(throws: DetectionError.unauthorized) {
+            _ = try await makeService().detectObjects(in: Data([0x01]))
+        }
+        #expect(StubURLProtocol.requestCount == 1)
+    }
+
+    @Test func decodingFailureDoesNotRetryAutomatically() async {
+        // HTTP success with unusable output is not a transport problem;
+        // resending the same bytes would just repeat it.
+        StubURLProtocol.reset { _, _ in (200, Data("not an envelope".utf8), [:]) }
+
+        await #expect(throws: DetectionError.decoding) {
+            _ = try await makeService().detectObjects(in: Data([0x01]))
+        }
+        #expect(StubURLProtocol.requestCount == 1)
+    }
+
+    @Test func transient503SucceedsOnSecondAttempt() async throws {
+        let recorder = SleepRecorder()
+        StubURLProtocol.reset { _, attempt in
+            attempt == 1 ? (503, Data(), [:]) : (200, Fixture.twoObjects, [:])
+        }
+
+        let objects = try await makeService(recorder: recorder).detectObjects(in: Data([0x01]))
+        #expect(objects.count == 2)
+        #expect(StubURLProtocol.requestCount == 2)
+        #expect(await recorder.durations == [.seconds(1)])
+    }
+
+    @Test func transientFailuresSucceedOnFinalAllowedAttempt() async throws {
+        let recorder = SleepRecorder()
+        StubURLProtocol.reset { _, attempt in
+            attempt < 3 ? (502, Data(), [:]) : (200, Fixture.twoObjects, [:])
+        }
+
+        let objects = try await makeService(recorder: recorder).detectObjects(in: Data([0x01]))
+        #expect(objects.count == 2)
+        #expect(StubURLProtocol.requestCount == 3)
+        // Exponential progression: 1 s before retry 1, 2 s before retry 2.
+        #expect(await recorder.durations == [.seconds(1), .seconds(2)])
+    }
+
+    @Test func rateLimitExhaustsBoundedRetriesThenThrows() async {
+        let recorder = SleepRecorder()
+        StubURLProtocol.reset { _, _ in (429, Data(), [:]) }
+
+        await #expect(throws: DetectionError.rateLimited) {
+            _ = try await makeService(recorder: recorder).detectObjects(in: Data([0x01]))
+        }
+        #expect(StubURLProtocol.requestCount == GeminiDetectionService.maxAttempts)
+        #expect(await recorder.durations.count == GeminiDetectionService.maxAttempts - 1)
+    }
+
+    @Test func numericRetryAfterIsPreferredOverBackoff() async throws {
+        let recorder = SleepRecorder()
+        StubURLProtocol.reset { _, attempt in
+            attempt == 1 ? (429, Data(), ["Retry-After": "5"]) : (200, Fixture.twoObjects, [:])
+        }
+
+        _ = try await makeService(recorder: recorder).detectObjects(in: Data([0x01]))
+        #expect(await recorder.durations == [.seconds(5)])
+    }
+
+    @Test func invalidRetryAfterFallsBackToExponentialBackoff() async throws {
+        let recorder = SleepRecorder()
+        StubURLProtocol.reset { _, attempt in
+            attempt == 1 ? (429, Data(), ["Retry-After": "soon"]) : (200, Fixture.twoObjects, [:])
+        }
+
+        _ = try await makeService(recorder: recorder).detectObjects(in: Data([0x01]))
+        #expect(await recorder.durations == [.seconds(1)])
+    }
+
+    @Test func excessiveRetryAfterIsCapped() async throws {
+        let recorder = SleepRecorder()
+        StubURLProtocol.reset { _, attempt in
+            attempt == 1 ? (429, Data(), ["Retry-After": "3600"]) : (200, Fixture.twoObjects, [:])
+        }
+
+        _ = try await makeService(recorder: recorder).detectObjects(in: Data([0x01]))
+        #expect(await recorder.durations == [GeminiDetectionService.maxRetryDelay])
+    }
+
+    @Test func cancellationDuringBackoffPreventsFurtherAttempts() async {
+        // Uses the real cancellation-aware sleep: cancelling the task
+        // interrupts the backoff and no second request is ever sent.
+        StubURLProtocol.reset { _, _ in (503, Data(), [:]) }
+        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
+
+        let task = Task {
             _ = try await service.detectObjects(in: Data([0x01]))
         }
+        // Let the first attempt fail and the (1 s) backoff begin.
+        try? await Task.sleep(for: .milliseconds(200))
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+        #expect(StubURLProtocol.requestCount == 1)
     }
 
     // MARK: - Connection validation (models.get)
 
     @Test func validateKeySucceedsOnOKStatus() async throws {
-        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
-        StubURLProtocol.handler = { _ in (200, Data("{\"name\": \"models/gemini-3.8-flash\"}".utf8)) }
+        StubURLProtocol.reset { _, _ in (200, Data("{\"name\": \"models/gemini-3.8-flash\"}".utf8), [:]) }
 
-        try await service.validateKey()
+        try await makeService().validateKey()
     }
 
     @Test func validateKeyMapsUnauthorized() async {
-        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
-        StubURLProtocol.handler = { _ in (403, Data()) }
+        StubURLProtocol.reset { _, _ in (403, Data(), [:]) }
 
         await #expect(throws: DetectionError.unauthorized) {
-            try await service.validateKey()
+            try await makeService().validateKey()
         }
     }
 
-    @Test func validateKeyMapsRateLimitAndServerFailures() async {
-        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
-
-        StubURLProtocol.handler = { _ in (429, Data()) }
+    @Test func validateKeyNeverRetries() async {
+        // Test Connection is a diagnostic: one tap → one request, even for
+        // transient statuses the detection path would retry.
+        StubURLProtocol.reset { _, _ in (429, Data(), [:]) }
         await #expect(throws: DetectionError.rateLimited) {
-            try await service.validateKey()
+            try await makeService().validateKey()
         }
+        #expect(StubURLProtocol.requestCount == 1)
 
-        StubURLProtocol.handler = { _ in (503, Data()) }
+        StubURLProtocol.reset { _, _ in (503, Data(), [:]) }
         await #expect(throws: DetectionError.server(statusCode: 503)) {
-            try await service.validateKey()
+            try await makeService().validateKey()
         }
+        #expect(StubURLProtocol.requestCount == 1)
     }
 }
 
 /// Minimal URLProtocol stub so the real URLSession path is exercised without
-/// any network. Not a networking framework — test-only plumbing.
+/// any network. Not a networking framework — test-only plumbing. The handler
+/// receives the 1-based request number so tests can script per-attempt
+/// responses; suites using it must be `.serialized` (shared static state).
 final class StubURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
+    nonisolated(unsafe) static var handler: ((URLRequest, Int) -> (Int, Data, [String: String]))?
+    nonisolated(unsafe) private(set) static var requestCount = 0
+
+    static func reset(handler: @escaping (URLRequest, Int) -> (Int, Data, [String: String])) {
+        requestCount = 0
+        self.handler = handler
+    }
 
     static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -268,12 +435,22 @@ final class StubURLProtocol: URLProtocol {
 
     override func startLoading() {
         guard let url = request.url, let handler = Self.handler else { return }
-        let (statusCode, data) = handler(request)
-        let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
+        Self.requestCount += 1
+        let (statusCode, data, headers) = handler(request, Self.requestCount)
+        let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: nil, headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}
+}
+
+/// Records backoff sleeps so retry tests never wait in real time.
+actor SleepRecorder {
+    private(set) var durations: [Duration] = []
+
+    func record(_ duration: Duration) {
+        durations.append(duration)
+    }
 }
