@@ -5,27 +5,34 @@
 
 import SwiftUI
 
-/// Settings shell. Gemini API key entry (Keychain-backed) arrives in a later
-/// phase. Demo Mode intentionally has no toggle here yet: with no live
-/// detection service to switch away from, "Try Demo Mode" on the main screen
-/// is the single, obvious entry point. A persistent mode switch becomes
-/// meaningful once the Gemini integration exists.
+/// BYOK settings: add, test, edit, and remove the user's Gemini API key.
+/// The key itself is never displayed once stored — only a masked placeholder.
 struct SettingsView: View {
+    @State private var viewModel: SettingsViewModel
     @Environment(\.dismiss) private var dismiss
+
+    init(dependencies: AppDependencies) {
+        self.init(viewModel: SettingsViewModel(
+            keyStore: dependencies.geminiKeyStore,
+            validator: dependencies.validateAPIKey
+        ))
+    }
+
+    /// Lets previews start from a specific state.
+    init(viewModel: SettingsViewModel) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
         Form {
-            Section {
-                LabeledContent("Gemini API Key", value: "Coming soon")
-            } footer: {
-                Text("You'll be able to add your own Google Gemini API key here to analyze photos.")
+            statusSection
+            if viewModel.isKeyConfigured && !viewModel.isEditingKey {
+                configuredActionsSection
+            } else {
+                keyEntrySection
             }
-
-            Section {
-                Label("Demo Mode", systemImage: "sparkles")
-            } footer: {
-                Text("Demo Mode needs no setup — choose “Try Demo Mode” on the main screen to explore VisionBox without an API key or network access.")
-            }
+            getKeySection
+            demoModeSection
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
@@ -36,11 +43,185 @@ struct SettingsView: View {
                 }
             }
         }
+        .alert(
+            "Remove Gemini API Key?",
+            isPresented: $viewModel.isShowingRemoveConfirmation
+        ) {
+            Button("Remove Key", role: .destructive) {
+                viewModel.removeKey()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You'll need to add a Gemini API key again to analyze personal photos. Demo Mode will keep working.")
+        }
+        .onDisappear {
+            viewModel.cancelValidation()
+        }
+    }
+
+    // MARK: - Sections
+
+    private var statusSection: some View {
+        Section {
+            LabeledContent("Status", value: viewModel.isKeyConfigured ? "Configured" : "Not Set Up")
+            if viewModel.isKeyConfigured && !viewModel.isEditingKey {
+                LabeledContent("API Key", value: "••••••••••••••••")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("API key stored")
+            }
+            connectionStatusRow
+        } header: {
+            Text("Gemini API")
+        } footer: {
+            Text("VisionBox doesn't include its own Gemini API key — you provide your own. It's stored securely in the Keychain on this device and sent only to Google's Gemini API.")
+        }
+    }
+
+    @ViewBuilder
+    private var connectionStatusRow: some View {
+        switch viewModel.status {
+        case .untested:
+            EmptyView()
+        case .testing:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Testing connection…")
+            }
+            .foregroundStyle(.secondary)
+        case .connected:
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var keyEntrySection: some View {
+        Section {
+            SecureField("Paste your Gemini API key", text: $viewModel.draftKey)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityLabel("Gemini API key")
+            Button("Save & Test") {
+                viewModel.saveAndTest()
+            }
+            .disabled(!viewModel.canSaveDraft)
+            if viewModel.isEditingKey {
+                Button("Cancel", role: .cancel) {
+                    viewModel.cancelEditingKey()
+                }
+            }
+        } header: {
+            Text(viewModel.isEditingKey ? "Replace API Key" : "Add Your API Key")
+        } footer: {
+            Text("The key is saved to the Keychain, then verified with a minimal request to Gemini — no photo is sent.")
+        }
+    }
+
+    private var configuredActionsSection: some View {
+        Section {
+            Button("Test Connection") {
+                viewModel.testConnection()
+            }
+            .disabled(viewModel.status == .testing)
+            Button("Edit Key") {
+                viewModel.beginEditingKey()
+            }
+            Button("Remove Key…", role: .destructive) {
+                viewModel.isShowingRemoveConfirmation = true
+            }
+        }
+    }
+
+    private var getKeySection: some View {
+        Section {
+            Link(destination: URL(string: "https://aistudio.google.com/apikey")!) {
+                Label("Get a Gemini API Key", systemImage: "arrow.up.right")
+            }
+            .accessibilityHint("Opens Google AI Studio in the browser")
+        } footer: {
+            Text("Create a free API key in Google AI Studio.")
+        }
+    }
+
+    private var demoModeSection: some View {
+        Section {
+            Label("Demo Mode", systemImage: "sparkles")
+        } footer: {
+            Text("Demo Mode needs no API key or network — choose “Try Demo Mode” on the main screen.")
+        }
     }
 }
 
-#Preview {
+// MARK: - Previews
+// All previews use in-memory key stores and no-op validators: no Keychain
+// writes, no networking, no real keys.
+
+#Preview("First setup") {
     NavigationStack {
-        SettingsView()
+        SettingsView(viewModel: SettingsViewModel(
+            keyStore: GeminiKeyStore(previewKey: nil),
+            validator: { _ in }
+        ))
+    }
+}
+
+#Preview("Configured") {
+    NavigationStack {
+        SettingsView(viewModel: SettingsViewModel(
+            keyStore: GeminiKeyStore(previewKey: "preview-key"),
+            validator: { _ in }
+        ))
+    }
+}
+
+#Preview("Testing") {
+    NavigationStack {
+        SettingsView(viewModel: SettingsViewModel(
+            keyStore: GeminiKeyStore(previewKey: "preview-key"),
+            validator: { _ in },
+            status: .testing
+        ))
+    }
+}
+
+#Preview("Connected") {
+    NavigationStack {
+        SettingsView(viewModel: SettingsViewModel(
+            keyStore: GeminiKeyStore(previewKey: "preview-key"),
+            validator: { _ in },
+            status: .connected
+        ))
+    }
+}
+
+#Preview("Invalid key") {
+    NavigationStack {
+        SettingsView(viewModel: SettingsViewModel(
+            keyStore: GeminiKeyStore(previewKey: "preview-key"),
+            validator: { _ in },
+            status: .failed("Invalid API key")
+        ))
+    }
+}
+
+#Preview("Connection failure") {
+    NavigationStack {
+        SettingsView(viewModel: SettingsViewModel(
+            keyStore: GeminiKeyStore(previewKey: "preview-key"),
+            validator: { _ in },
+            status: .failed("Could not connect — check your internet connection")
+        ))
+    }
+}
+
+#Preview("Editing key") {
+    NavigationStack {
+        SettingsView(viewModel: SettingsViewModel(
+            keyStore: GeminiKeyStore(previewKey: "preview-key"),
+            validator: { _ in },
+            isEditingKey: true
+        ))
     }
 }

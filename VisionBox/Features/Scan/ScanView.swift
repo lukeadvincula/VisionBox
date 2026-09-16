@@ -9,20 +9,26 @@ import SwiftUI
 /// The app's main screen: switches between the scan states and hosts the
 /// demo-scene picker, the Photos picker, and Settings.
 struct ScanView: View {
+    private let dependencies: AppDependencies
     @State private var viewModel: ScanViewModel
     @State private var isShowingSettings: Bool
     @State private var isShowingDemoPicker: Bool
     @State private var selectedPhotoItem: PhotosPickerItem?
 
     init(dependencies: AppDependencies) {
-        self.init(viewModel: ScanViewModel(
-            demoService: dependencies.demoDetectionService,
-            liveService: dependencies.liveDetectionService
-        ))
+        self.init(
+            viewModel: ScanViewModel(
+                demoService: dependencies.demoDetectionService,
+                keyStore: dependencies.geminiKeyStore,
+                liveService: dependencies.liveDetectionService
+            ),
+            dependencies: dependencies
+        )
     }
 
     /// Lets previews start from a specific state.
-    init(viewModel: ScanViewModel) {
+    init(viewModel: ScanViewModel, dependencies: AppDependencies) {
+        self.dependencies = dependencies
         self.viewModel = viewModel
         self.isShowingSettings = false
         self.isShowingDemoPicker = false
@@ -63,7 +69,7 @@ struct ScanView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             NavigationStack {
-                SettingsView()
+                SettingsView(dependencies: dependencies)
             }
         }
         .sheet(isPresented: $isShowingDemoPicker) {
@@ -89,7 +95,7 @@ struct ScanView: View {
             ContentUnavailableView(
                 "Detect Objects in Photos",
                 systemImage: "viewfinder",
-                description: Text("Pick a photo from your library, or explore the detection experience instantly with Demo Mode — no API key needed.")
+                description: Text("Pick a photo to analyze with your own Gemini API key, or explore the detection experience instantly with Demo Mode — no setup needed.")
             )
             VStack(spacing: 12) {
                 Button("Try Demo Mode", systemImage: "sparkles") {
@@ -108,38 +114,56 @@ struct ScanView: View {
     }
 
     private func photoReadyView(_ image: UIImage) -> some View {
-        let canAnalyze = viewModel.isLiveAnalysisAvailable
-        return ScrollView {
+        ScrollView {
             VStack(spacing: 16) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                Text(canAnalyze
-                    ? "Photo ready to analyze with Gemini."
-                    : "Photo ready. Analyzing your own photos requires a Gemini API key — key setup arrives in Settings next. Try Demo Mode to see detection in action today.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                if viewModel.isLiveAnalysisAvailable {
+                    Text("Photo ready to analyze.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
 
-                VStack(spacing: 12) {
-                    Button("Analyze", systemImage: "sparkle.magnifyingglass") {
-                        viewModel.analyzePhoto()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canAnalyze)
+                    VStack(spacing: 12) {
+                        Button("Analyze with Gemini", systemImage: "sparkle.magnifyingglass") {
+                            viewModel.analyzePhoto()
+                        }
+                        .buttonStyle(.borderedProminent)
 
-                    Button("Try Demo Mode Instead", systemImage: "sparkles") {
-                        isShowingDemoPicker = true
+                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                            Label("Choose a Different Photo", systemImage: "photo.on.rectangle")
+                        }
                     }
-                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                } else {
+                    VStack(spacing: 6) {
+                        Text("Gemini API Key Required")
+                            .font(.headline)
+                        Text("Add your own Gemini API key to analyze personal photos.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
 
-                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                        Label("Choose a Different Photo", systemImage: "photo.on.rectangle")
+                    VStack(spacing: 12) {
+                        Button("Set Up Gemini", systemImage: "key") {
+                            isShowingSettings = true
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Try Demo Mode", systemImage: "sparkles") {
+                            isShowingDemoPicker = true
+                        }
+                        .buttonStyle(.bordered)
+
+                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                            Label("Choose a Different Photo", systemImage: "photo.on.rectangle")
+                        }
                     }
+                    .controlSize(.large)
                 }
-                .controlSize(.large)
             }
             .padding()
         }
@@ -184,51 +208,78 @@ struct ScanView: View {
 }
 
 // MARK: - Previews
+// All previews use in-memory key stores and stub services: no Keychain
+// access, no networking, no real keys.
+
+private func previewDependencies(keyConfigured: Bool) -> AppDependencies {
+    AppDependencies(geminiKeyStore: GeminiKeyStore(previewKey: keyConfigured ? "preview-key" : nil))
+}
+
+private func previewViewModel(
+    keyConfigured: Bool,
+    state: ScanViewModel.State
+) -> ScanViewModel {
+    ScanViewModel(
+        demoService: DemoDetectionService(),
+        keyStore: GeminiKeyStore(previewKey: keyConfigured ? "preview-key" : nil),
+        liveService: { _ in DemoDetectionService() },
+        state: state
+    )
+}
 
 #Preview("Idle") {
     NavigationStack {
-        ScanView(dependencies: AppDependencies())
+        ScanView(
+            viewModel: previewViewModel(keyConfigured: false, state: .idle),
+            dependencies: previewDependencies(keyConfigured: false)
+        )
     }
 }
 
 #Preview("Photo ready (no API key)") {
     NavigationStack {
-        ScanView(viewModel: ScanViewModel(
-            demoService: DemoDetectionService(),
-            liveService: { nil },
-            state: .photoReady(DemoScene.everydayCarry.image ?? UIImage())
-        ))
+        ScanView(
+            viewModel: previewViewModel(
+                keyConfigured: false,
+                state: .photoReady(DemoScene.everydayCarry.image ?? UIImage())
+            ),
+            dependencies: previewDependencies(keyConfigured: false)
+        )
     }
 }
 
 #Preview("Photo ready (key configured)") {
-    // The demo service stands in for the live one — previews never perform
-    // real networking and never need a real API key.
     NavigationStack {
-        ScanView(viewModel: ScanViewModel(
-            demoService: DemoDetectionService(),
-            liveService: { DemoDetectionService() },
-            state: .photoReady(DemoScene.everydayCarry.image ?? UIImage())
-        ))
+        ScanView(
+            viewModel: previewViewModel(
+                keyConfigured: true,
+                state: .photoReady(DemoScene.everydayCarry.image ?? UIImage())
+            ),
+            dependencies: previewDependencies(keyConfigured: true)
+        )
     }
 }
 
 #Preview("Analyzing") {
     NavigationStack {
-        ScanView(viewModel: ScanViewModel(
-            demoService: DemoDetectionService(),
-            liveService: { nil },
-            state: .analyzing(DemoScene.desk.image ?? UIImage())
-        ))
+        ScanView(
+            viewModel: previewViewModel(
+                keyConfigured: true,
+                state: .analyzing(DemoScene.desk.image ?? UIImage())
+            ),
+            dependencies: previewDependencies(keyConfigured: true)
+        )
     }
 }
 
 #Preview("Gemini error") {
     NavigationStack {
-        ScanView(viewModel: ScanViewModel(
-            demoService: DemoDetectionService(),
-            liveService: { nil },
-            state: .error(DetectionError.rateLimited.userMessage)
-        ))
+        ScanView(
+            viewModel: previewViewModel(
+                keyConfigured: true,
+                state: .error(DetectionError.rateLimited.userMessage)
+            ),
+            dependencies: previewDependencies(keyConfigured: true)
+        )
     }
 }
