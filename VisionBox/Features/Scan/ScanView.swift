@@ -7,13 +7,19 @@ import PhotosUI
 import SwiftUI
 
 /// The app's main screen: switches between the scan states and hosts the
-/// demo-scene picker, the Photos picker, and Settings.
+/// camera, the Photos picker, the demo-scene picker, and Settings.
 struct ScanView: View {
     private let dependencies: AppDependencies
     @State private var viewModel: ScanViewModel
     @State private var isShowingSettings: Bool
     @State private var isShowingDemoPicker: Bool
+    @State private var isShowingPhotosPicker: Bool
+    @State private var isShowingCamera: Bool
+    @State private var isShowingCameraDeniedAlert: Bool
+    @State private var isShowingCameraUnavailableAlert: Bool
     @State private var selectedPhotoItem: PhotosPickerItem?
+
+    @Environment(\.openURL) private var openURL
 
     init(dependencies: AppDependencies) {
         self.init(
@@ -32,6 +38,10 @@ struct ScanView: View {
         self.viewModel = viewModel
         self.isShowingSettings = false
         self.isShowingDemoPicker = false
+        self.isShowingPhotosPicker = false
+        self.isShowingCamera = false
+        self.isShowingCameraDeniedAlert = false
+        self.isShowingCameraUnavailableAlert = false
         self.selectedPhotoItem = nil
     }
 
@@ -80,11 +90,58 @@ struct ScanView: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $isShowingCamera) {
+            CameraPicker { capturedImage in
+                isShowingCamera = false
+                // nil means the user cancelled — the previous state stays.
+                if let capturedImage {
+                    viewModel.setCapturedImage(capturedImage)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .photosPicker(isPresented: $isShowingPhotosPicker, selection: $selectedPhotoItem, matching: .images)
         .onChange(of: selectedPhotoItem) { _, newItem in
             guard let newItem else { return }
             viewModel.loadPhoto(newItem)
             // Clear the selection so picking the same photo again still works.
             selectedPhotoItem = nil
+        }
+        .alert("Camera Access Needed", isPresented: $isShowingCameraDeniedAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    openURL(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enable camera access in Settings to take photos with VisionBox. You can still choose an existing photo or use Demo Mode.")
+        }
+        .alert("Camera Unavailable", isPresented: $isShowingCameraUnavailableAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Camera capture isn't available on this device. You can choose a photo instead.")
+        }
+    }
+
+    /// Take Photo flow: hardware and permission are checked only here — never
+    /// at launch, and never for Photos or Demo Mode.
+    private func takePhoto() {
+        switch CameraAccess.readiness {
+        case .ready:
+            isShowingCamera = true
+        case .needsPermission:
+            Task {
+                if await CameraAccess.requestAccess() {
+                    isShowingCamera = true
+                } else {
+                    isShowingCameraDeniedAlert = true
+                }
+            }
+        case .denied:
+            isShowingCameraDeniedAlert = true
+        case .unavailable:
+            isShowingCameraUnavailableAlert = true
         }
     }
 
@@ -95,18 +152,26 @@ struct ScanView: View {
             ContentUnavailableView(
                 "Detect Objects in Photos",
                 systemImage: "viewfinder",
-                description: Text("Pick a photo to analyze with your own Gemini API key, or explore the detection experience instantly with Demo Mode — no setup needed.")
+                description: Text("Take or pick a photo to analyze with your own Gemini API key, or explore the detection experience instantly with Demo Mode — no setup needed.")
             )
             VStack(spacing: 12) {
-                Button("Try Demo Mode", systemImage: "sparkles") {
-                    isShowingDemoPicker = true
+                Button("Take Photo", systemImage: "camera") {
+                    takePhoto()
                 }
                 .buttonStyle(.borderedProminent)
 
-                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                Button {
+                    isShowingPhotosPicker = true
+                } label: {
                     Label("Choose Photo", systemImage: "photo.on.rectangle")
                 }
                 .buttonStyle(.bordered)
+
+                Button("Try Demo Mode", systemImage: "sparkles") {
+                    isShowingDemoPicker = true
+                }
+                .buttonStyle(.bordered)
+                .padding(.top, 12)
             }
             .controlSize(.large)
         }
@@ -132,9 +197,7 @@ struct ScanView: View {
                         }
                         .buttonStyle(.borderedProminent)
 
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                            Label("Choose a Different Photo", systemImage: "photo.on.rectangle")
-                        }
+                        changePhotoButton
                     }
                     .controlSize(.large)
                 } else {
@@ -158,15 +221,28 @@ struct ScanView: View {
                         }
                         .buttonStyle(.bordered)
 
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                            Label("Choose a Different Photo", systemImage: "photo.on.rectangle")
-                        }
+                        changePhotoButton
                     }
                     .controlSize(.large)
                 }
             }
             .padding()
         }
+    }
+
+    /// One replacement action covering both image sources.
+    private var changePhotoButton: some View {
+        Menu {
+            Button("Take Photo", systemImage: "camera") {
+                takePhoto()
+            }
+            Button("Choose from Photos", systemImage: "photo.on.rectangle") {
+                isShowingPhotosPicker = true
+            }
+        } label: {
+            Label("Change Photo", systemImage: "photo.on.rectangle.angled")
+        }
+        .accessibilityHint("Take a new photo or choose one from your library")
     }
 
     private func analyzingView(_ image: UIImage) -> some View {
@@ -209,7 +285,8 @@ struct ScanView: View {
 
 // MARK: - Previews
 // All previews use in-memory key stores and stub services: no Keychain
-// access, no networking, no real keys.
+// access, no networking, no real keys, no camera presentation or permission
+// prompts (the camera path only runs from an explicit Take Photo tap).
 
 private func previewDependencies(keyConfigured: Bool) -> AppDependencies {
     AppDependencies(geminiKeyStore: GeminiKeyStore(previewKey: keyConfigured ? "preview-key" : nil))

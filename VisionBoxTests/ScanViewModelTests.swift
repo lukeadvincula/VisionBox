@@ -182,6 +182,63 @@ struct ScanViewModelTests {
         #expect(recorder.requestedKeys == ["second-key"])
     }
 
+    // MARK: - Camera capture
+
+    @Test func capturedImageTransitionsToPhotoReady() {
+        let viewModel = makeViewModel()
+
+        viewModel.setCapturedImage(tinyImage())
+
+        guard case .photoReady = viewModel.state else {
+            Issue.record("Expected .photoReady, got \(viewModel.state)")
+            return
+        }
+    }
+
+    @Test func capturedImageReplacesInFlightWorkAndExistingPhoto() async throws {
+        let viewModel = makeViewModel(demo: NeverFinishingService())
+
+        viewModel.analyzeDemoScene(.desk)
+        let previousTask = try #require(viewModel.analysisTask)
+
+        let replacement = tinyImage()
+        viewModel.setCapturedImage(replacement)
+
+        #expect(previousTask.isCancelled)
+        guard case .photoReady(let image) = viewModel.state else {
+            Issue.record("Expected .photoReady, got \(viewModel.state)")
+            return
+        }
+        #expect(image === replacement)
+
+        // The cancelled task must not clobber the captured photo's state.
+        await previousTask.value
+        guard case .photoReady = viewModel.state else {
+            Issue.record("Expected .photoReady after cancelled task finished, got \(viewModel.state)")
+            return
+        }
+    }
+
+    @Test func capturedImageUsesTheSameAnalysisPathAsPhotosSelections() async {
+        // A camera capture converges into photoReady and flows through the
+        // identical analyzePhoto() → live-service pipeline.
+        let expected = DemoScene.desk.detections
+        let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            live: SucceedingService(objects: expected)
+        )
+
+        viewModel.setCapturedImage(tinyImage())
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+
+        guard case .results(_, let objects) = viewModel.state else {
+            Issue.record("Expected .results, got \(viewModel.state)")
+            return
+        }
+        #expect(objects == expected)
+    }
+
     // MARK: - Live photo flow
 
     @Test func analyzePhotoRunsThroughTheLiveService() async throws {
