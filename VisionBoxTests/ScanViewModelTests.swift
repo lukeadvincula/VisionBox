@@ -40,15 +40,37 @@ private nonisolated struct NeverFinishingService: ObjectDetectionService {
     }
 }
 
+/// Records which API keys the live-service factory was asked for.
+@MainActor
+private final class LiveServiceRecorder {
+    private(set) var requestedKeys: [String] = []
+    private let service: any ObjectDetectionService
+
+    init(service: any ObjectDetectionService) {
+        self.service = service
+    }
+
+    func factory(_ key: String) -> any ObjectDetectionService {
+        requestedKeys.append(key)
+        return service
+    }
+}
+
 @MainActor
 struct ScanViewModelTests {
 
     private func makeViewModel(
         demo: any ObjectDetectionService = DemoDetectionService(),
-        live: (any ObjectDetectionService)? = nil,
+        keyStore: GeminiKeyStore? = nil,
+        live: any ObjectDetectionService = SucceedingService(objects: []),
         state: ScanViewModel.State = .idle
     ) -> ScanViewModel {
-        ScanViewModel(demoService: demo, liveService: { live }, state: state)
+        ScanViewModel(
+            demoService: demo,
+            keyStore: keyStore ?? GeminiKeyStore(previewKey: nil),
+            liveService: { _ in live },
+            state: state
+        )
     }
 
     private func tinyImage() -> UIImage {
@@ -107,16 +129,65 @@ struct ScanViewModelTests {
         #expect(objects.isEmpty)
     }
 
-    // MARK: - Live photo flow
+    @Test func demoModeNeverNeedsAKey() async {
+        // Demo analysis works with no key configured at all.
+        let viewModel = makeViewModel(
+            demo: SucceedingService(objects: DemoScene.desk.detections),
+            keyStore: GeminiKeyStore(previewKey: nil)
+        )
 
-    @Test func liveAvailabilityFollowsTheInjectedProvider() {
-        #expect(!makeViewModel(live: nil).isLiveAnalysisAvailable)
-        #expect(makeViewModel(live: SucceedingService(objects: [])).isLiveAnalysisAvailable)
+        viewModel.analyzeDemoScene(.desk)
+        await viewModel.analysisTask?.value
+
+        guard case .results = viewModel.state else {
+            Issue.record("Expected .results, got \(viewModel.state)")
+            return
+        }
     }
+
+    // MARK: - Credential availability propagation
+
+    @Test func availabilityFollowsTheKeyStore() {
+        #expect(!makeViewModel(keyStore: GeminiKeyStore(previewKey: nil)).isLiveAnalysisAvailable)
+        #expect(makeViewModel(keyStore: GeminiKeyStore(previewKey: "test-key")).isLiveAnalysisAvailable)
+    }
+
+    @Test func savingAndRemovingAKeyUpdatesAvailabilityImmediately() throws {
+        let keyStore = GeminiKeyStore(previewKey: nil)
+        let viewModel = makeViewModel(keyStore: keyStore)
+
+        #expect(!viewModel.isLiveAnalysisAvailable)
+        try keyStore.save("test-key")
+        #expect(viewModel.isLiveAnalysisAvailable)
+        try keyStore.remove()
+        #expect(!viewModel.isLiveAnalysisAvailable)
+    }
+
+    @Test func analysisUsesTheCurrentKeyNotTheKeyAtCreationTime() async throws {
+        let keyStore = GeminiKeyStore(previewKey: "first-key")
+        let recorder = LiveServiceRecorder(service: SucceedingService(objects: []))
+        let viewModel = ScanViewModel(
+            demoService: DemoDetectionService(),
+            keyStore: keyStore,
+            liveService: recorder.factory,
+            state: .photoReady(tinyImage())
+        )
+
+        // The user replaces the key in Settings before analyzing.
+        try keyStore.save("second-key")
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+
+        #expect(recorder.requestedKeys == ["second-key"])
+    }
+
+    // MARK: - Live photo flow
 
     @Test func analyzePhotoRunsThroughTheLiveService() async throws {
         let expected = DemoScene.desk.detections
         let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
             live: SucceedingService(objects: expected),
             state: .photoReady(tinyImage())
         )
@@ -136,7 +207,14 @@ struct ScanViewModelTests {
     }
 
     @Test func analyzePhotoWithoutAKeyExplainsInsteadOfPretending() {
-        let viewModel = makeViewModel(live: nil, state: .photoReady(tinyImage()))
+        let keyStore = GeminiKeyStore(previewKey: nil)
+        let recorder = LiveServiceRecorder(service: SucceedingService(objects: []))
+        let viewModel = ScanViewModel(
+            demoService: DemoDetectionService(),
+            keyStore: keyStore,
+            liveService: recorder.factory,
+            state: .photoReady(tinyImage())
+        )
 
         viewModel.analyzePhoto()
 
@@ -145,10 +223,12 @@ struct ScanViewModelTests {
             return
         }
         #expect(message == DetectionError.missingAPIKey.userMessage)
+        #expect(recorder.requestedKeys.isEmpty)
     }
 
     @Test func liveFailureSurfacesTheTypedUserMessage() async {
         let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
             live: DetectionErrorService(error: .rateLimited),
             state: .photoReady(tinyImage())
         )

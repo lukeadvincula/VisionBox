@@ -129,6 +129,22 @@ nonisolated struct GeminiInteractionResponse: Decodable {
     }
 }
 
+/// Google's standard error body, decoded only to classify failures (e.g.
+/// HTTP 400 with reason `API_KEY_INVALID` means the key is invalid). The
+/// message text is never surfaced to the UI.
+nonisolated struct GoogleErrorEnvelope: Decodable {
+    let error: ErrorBody?
+
+    struct ErrorBody: Decodable {
+        let status: String?
+        let details: [Detail]?
+
+        struct Detail: Decodable {
+            let reason: String?
+        }
+    }
+}
+
 /// One detection as Gemini reports it: `box_2d` is `[ymin, xmin, ymax, xmax]`
 /// normalized to 0–1000. This convention never leaves the Gemini layer.
 nonisolated struct GeminiDetection: Decodable {

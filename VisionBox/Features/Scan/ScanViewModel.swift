@@ -32,16 +32,21 @@ final class ScanViewModel {
     private(set) var analysisTask: Task<Void, Never>?
 
     private let demoService: any ObjectDetectionService
-    /// Returns the live Gemini service, or nil while no API key is stored.
-    /// Resolved per call so a key added or removed mid-session takes effect.
-    private let liveService: () -> (any ObjectDetectionService)?
+    /// Shared observable credential state; availability comes from here
+    /// without any Keychain access during view updates.
+    private let keyStore: GeminiKeyStore
+    /// Builds a live service for the current key. Called fresh at analyze
+    /// time, so a replaced key is always the one used — no stale service.
+    private let liveService: (String) -> any ObjectDetectionService
 
     init(
         demoService: any ObjectDetectionService,
-        liveService: @escaping () -> (any ObjectDetectionService)?,
+        keyStore: GeminiKeyStore,
+        liveService: @escaping (String) -> any ObjectDetectionService,
         state: State = .idle
     ) {
         self.demoService = demoService
+        self.keyStore = keyStore
         self.liveService = liveService
         self.state = state
     }
@@ -53,8 +58,10 @@ final class ScanViewModel {
     }
 
     /// Whether live Gemini analysis is currently possible (a key is stored).
+    /// Observable: saving or removing a key in Settings updates this
+    /// immediately, with no restart and no Keychain read per body evaluation.
     var isLiveAnalysisAvailable: Bool {
-        liveService() != nil
+        keyStore.isKeyConfigured
     }
 
     /// Runs a bundled demo scene through the detection seam.
@@ -83,12 +90,13 @@ final class ScanViewModel {
     /// service: prepare (orientation-normalize, downscale, JPEG) → detect.
     func analyzePhoto() {
         guard case .photoReady(let image) = state else { return }
-        guard let service = liveService() else {
-            // Unreachable through the UI (the button is disabled without a
-            // key), but stays honest if ever called directly.
+        guard let apiKey = keyStore.currentKey() else {
+            // Unreachable through the UI (no Analyze button without a key),
+            // but stays honest if ever called directly.
             state = .error(DetectionError.missingAPIKey.userMessage)
             return
         }
+        let service = liveService(apiKey)
         analysisTask?.cancel()
         state = .analyzing(image)
         analysisTask = Task {

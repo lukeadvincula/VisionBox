@@ -68,4 +68,26 @@ struct GeminiRequestTests {
         let body = try #require(request.httpBody)
         #expect(!String(decoding: body, as: UTF8.self).contains(apiKey))
     }
+
+    // MARK: - Connection validation (models.get)
+
+    @Test func validationRequestIsAMinimalAuthenticatedGET() throws {
+        let request = GeminiDetectionService.makeValidationRequest(apiKey: apiKey)
+
+        #expect(request.httpMethod == "GET")
+        let url = try #require(request.url)
+        #expect(url.host() == "generativelanguage.googleapis.com")
+        #expect(url.path() == "/v1beta/models/gemini-3.8-flash")
+        #expect(request.value(forHTTPHeaderField: "x-goog-api-key") == apiKey)
+    }
+
+    @Test func validationRequestCarriesNoBodyAndNoKeyInURL() throws {
+        let request = GeminiDetectionService.makeValidationRequest(apiKey: apiKey)
+
+        // No body at all: no image, no personal data, no key.
+        #expect(request.httpBody == nil)
+        let url = try #require(request.url)
+        #expect(url.query() == nil)
+        #expect(!url.absoluteString.contains(apiKey))
+    }
 }

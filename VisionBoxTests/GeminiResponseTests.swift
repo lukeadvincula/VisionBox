@@ -171,6 +171,30 @@ struct GeminiResponseTests {
         #expect(GeminiDetectionService.error(forStatusCode: statusCode) == expected)
     }
 
+    // Google reports invalid keys as 400 + API_KEY_INVALID, not 401/403
+    // (observed against the live API).
+    @Test func invalidAPIKey400IsClassifiedAsUnauthorized() {
+        let body = Data("""
+            {
+              "error": {
+                "code": 400,
+                "message": "API key not valid. Please pass a valid API key.",
+                "status": "INVALID_ARGUMENT",
+                "details": [ { "reason": "API_KEY_INVALID" } ]
+              }
+            }
+            """.utf8)
+        #expect(GeminiDetectionService.error(forStatusCode: 400, body: body) == .unauthorized)
+    }
+
+    @Test func other400BodiesRemainInvalidResponse() {
+        let body = Data("""
+            { "error": { "code": 400, "status": "INVALID_ARGUMENT", "details": [ { "reason": "SOMETHING_ELSE" } ] } }
+            """.utf8)
+        #expect(GeminiDetectionService.error(forStatusCode: 400, body: body) == .invalidResponse)
+        #expect(GeminiDetectionService.error(forStatusCode: 400, body: Data("not json".utf8)) == .invalidResponse)
+    }
+
 }
 
 /// End-to-end through a real URLSession (stubbed transport). Serialized
@@ -192,6 +216,38 @@ struct GeminiTransportTests {
 
         await #expect(throws: DetectionError.unauthorized) {
             _ = try await service.detectObjects(in: Data([0x01]))
+        }
+    }
+
+    // MARK: - Connection validation (models.get)
+
+    @Test func validateKeySucceedsOnOKStatus() async throws {
+        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
+        StubURLProtocol.handler = { _ in (200, Data("{\"name\": \"models/gemini-3.8-flash\"}".utf8)) }
+
+        try await service.validateKey()
+    }
+
+    @Test func validateKeyMapsUnauthorized() async {
+        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
+        StubURLProtocol.handler = { _ in (403, Data()) }
+
+        await #expect(throws: DetectionError.unauthorized) {
+            try await service.validateKey()
+        }
+    }
+
+    @Test func validateKeyMapsRateLimitAndServerFailures() async {
+        let service = GeminiDetectionService(apiKey: "TEST-KEY-NOT-REAL", session: StubURLProtocol.makeSession())
+
+        StubURLProtocol.handler = { _ in (429, Data()) }
+        await #expect(throws: DetectionError.rateLimited) {
+            try await service.validateKey()
+        }
+
+        StubURLProtocol.handler = { _ in (503, Data()) }
+        await #expect(throws: DetectionError.server(statusCode: 503)) {
+            try await service.validateKey()
         }
     }
 }
