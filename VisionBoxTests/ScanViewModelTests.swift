@@ -40,6 +40,25 @@ private nonisolated struct NeverFinishingService: ObjectDetectionService {
     }
 }
 
+/// Fails the first call with a transient error, then succeeds — the shape of
+/// a real-world Try Again recovery.
+private actor FlakyOnceService: ObjectDetectionService {
+    private var hasFailedOnce = false
+    private let objects: [DetectedObject]
+
+    init(objects: [DetectedObject]) {
+        self.objects = objects
+    }
+
+    func detectObjects(in imageData: Data) async throws -> [DetectedObject] {
+        if !hasFailedOnce {
+            hasFailedOnce = true
+            throw DetectionError.server(statusCode: 503)
+        }
+        return objects
+    }
+}
+
 /// Records which API keys the live-service factory was asked for.
 @MainActor
 private final class LiveServiceRecorder {
@@ -275,11 +294,12 @@ struct ScanViewModelTests {
 
         viewModel.analyzePhoto()
 
-        guard case .error(let message) = viewModel.state else {
+        guard case .error(let message, let image) = viewModel.state else {
             Issue.record("Expected .error, got \(viewModel.state)")
             return
         }
         #expect(message == DetectionError.missingAPIKey.userMessage)
+        #expect(image != nil)
         #expect(recorder.requestedKeys.isEmpty)
     }
 
@@ -293,11 +313,107 @@ struct ScanViewModelTests {
         viewModel.analyzePhoto()
         await viewModel.analysisTask?.value
 
-        guard case .error(let message) = viewModel.state else {
+        guard case .error(let message, _) = viewModel.state else {
             Issue.record("Expected .error, got \(viewModel.state)")
             return
         }
         #expect(message == DetectionError.rateLimited.userMessage)
+    }
+
+    // MARK: - Failure recovery
+
+    @Test func analysisFailureRetainsTheSelectedImage() async {
+        let original = tinyImage()
+        let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            live: DetectionErrorService(error: .server(statusCode: 503)),
+            state: .photoReady(original)
+        )
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+
+        guard case .error(_, .some(let retained)) = viewModel.state else {
+            Issue.record("Expected .error with a retained image, got \(viewModel.state)")
+            return
+        }
+        #expect(retained === original)
+    }
+
+    @Test func tryAgainReanalyzesTheSameImageToResults() async {
+        let expected = DemoScene.desk.detections
+        let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            live: FlakyOnceService(objects: expected),
+            state: .photoReady(tinyImage())
+        )
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+        guard case .error(_, .some) = viewModel.state else {
+            Issue.record("Expected .error with retained image, got \(viewModel.state)")
+            return
+        }
+
+        viewModel.retryAnalysis()
+        guard case .analyzing = viewModel.state else {
+            Issue.record("Expected .analyzing after Try Again, got \(viewModel.state)")
+            return
+        }
+
+        await viewModel.analysisTask?.value
+        guard case .results(_, let objects) = viewModel.state else {
+            Issue.record("Expected .results after retry, got \(viewModel.state)")
+            return
+        }
+        #expect(objects == expected)
+    }
+
+    @Test func retryAnalysisDoesNothingWithoutARetainedImage() {
+        let viewModel = makeViewModel(state: .error(message: "Photo failed to load.", image: nil))
+
+        viewModel.retryAnalysis()
+
+        guard case .error = viewModel.state else {
+            Issue.record("Expected unchanged .error, got \(viewModel.state)")
+            return
+        }
+    }
+
+    @Test func changingTheImageAfterFailureWorks() async {
+        let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            live: DetectionErrorService(error: .rateLimited),
+            state: .photoReady(tinyImage())
+        )
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+
+        let replacement = tinyImage()
+        viewModel.setCapturedImage(replacement)
+        guard case .photoReady(let image) = viewModel.state else {
+            Issue.record("Expected .photoReady, got \(viewModel.state)")
+            return
+        }
+        #expect(image === replacement)
+    }
+
+    @Test func resetAfterFailureReturnsToIdle() async {
+        let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            live: DetectionErrorService(error: .rateLimited),
+            state: .photoReady(tinyImage())
+        )
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+        viewModel.reset()
+
+        guard case .idle = viewModel.state else {
+            Issue.record("Expected .idle, got \(viewModel.state)")
+            return
+        }
     }
 
     // MARK: - Cancellation

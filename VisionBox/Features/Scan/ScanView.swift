@@ -58,8 +58,8 @@ struct ScanView: View {
                 analyzingView(image)
             case .results(let image, let objects):
                 ResultsView(image: image, objects: objects)
-            case .error(let message):
-                errorView(message)
+            case .error(let message, let image):
+                errorView(message, image: image)
             }
         }
         .navigationTitle("VisionBox")
@@ -259,27 +259,70 @@ struct ScanView: View {
         .padding()
     }
 
-    private func errorView(_ message: String) -> some View {
-        VStack(spacing: 24) {
-            ContentUnavailableView(
-                "Something Went Wrong",
-                systemImage: "exclamationmark.triangle",
-                description: Text(message)
-            )
-            VStack(spacing: 12) {
-                Button("Start Over") {
-                    viewModel.reset()
-                }
-                .buttonStyle(.borderedProminent)
+    /// When the failure interrupted a personal-photo analysis, the photo is
+    /// retained and Try Again re-runs it — no re-picking after a transient
+    /// API failure. Demo Mode stays an explicit option; it is never an
+    /// automatic fallback.
+    @ViewBuilder
+    private func errorView(_ message: String, image: UIImage?) -> some View {
+        if let image {
+            ScrollView {
+                VStack(spacing: 16) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .opacity(0.7)
 
-                Button("Try Demo Mode", systemImage: "sparkles") {
-                    isShowingDemoPicker = true
+                    VStack(spacing: 6) {
+                        Label("Analysis Failed", systemImage: "exclamationmark.triangle")
+                            .font(.headline)
+                        Text(message)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    VStack(spacing: 12) {
+                        Button("Try Again", systemImage: "arrow.clockwise") {
+                            viewModel.retryAnalysis()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityHint("Analyzes the same photo again")
+
+                        changePhotoButton
+
+                        Button("Try Demo Mode", systemImage: "sparkles") {
+                            isShowingDemoPicker = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .controlSize(.large)
                 }
-                .buttonStyle(.bordered)
+                .padding()
             }
-            .controlSize(.large)
+        } else {
+            VStack(spacing: 24) {
+                ContentUnavailableView(
+                    "Something Went Wrong",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(message)
+                )
+                VStack(spacing: 12) {
+                    Button("Start Over") {
+                        viewModel.reset()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Try Demo Mode", systemImage: "sparkles") {
+                        isShowingDemoPicker = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .controlSize(.large)
+            }
+            .padding()
         }
-        .padding()
     }
 }
 
@@ -349,14 +392,32 @@ private func previewViewModel(
     }
 }
 
-#Preview("Gemini error") {
+#Preview("Gemini error (photo retained)") {
     NavigationStack {
         ScanView(
             viewModel: previewViewModel(
                 keyConfigured: true,
-                state: .error(DetectionError.rateLimited.userMessage)
+                state: .error(
+                    message: DetectionError.rateLimited.userMessage,
+                    image: DemoScene.everydayCarry.image ?? UIImage()
+                )
             ),
             dependencies: previewDependencies(keyConfigured: true)
+        )
+    }
+}
+
+#Preview("Photo load error") {
+    NavigationStack {
+        ScanView(
+            viewModel: previewViewModel(
+                keyConfigured: false,
+                state: .error(
+                    message: "That photo couldn't be loaded. Try choosing a different one.",
+                    image: nil
+                )
+            ),
+            dependencies: previewDependencies(keyConfigured: false)
         )
     }
 }

@@ -24,7 +24,10 @@ final class ScanViewModel {
         case photoReady(UIImage)
         case analyzing(UIImage)
         case results(image: UIImage, objects: [DetectedObject])
-        case error(String)
+        /// `image` is the personal photo the failure interrupted (nil for
+        /// demo/photo-loading failures) — retained so the user can Try Again
+        /// without picking or capturing it again.
+        case error(message: String, image: UIImage?)
     }
 
     private(set) var state: State
@@ -67,7 +70,7 @@ final class ScanViewModel {
     /// Runs a bundled demo scene through the detection seam.
     func analyzeDemoScene(_ scene: DemoScene) {
         guard let image = scene.image, let imageData = scene.imageData else {
-            state = .error("This demo scene couldn't be loaded.")
+            state = .error(message: "This demo scene couldn't be loaded.", image: nil)
             return
         }
         analysisTask?.cancel()
@@ -81,7 +84,7 @@ final class ScanViewModel {
                 // Superseded by a newer action, which already updated the state.
             } catch {
                 guard !Task.isCancelled else { return }
-                state = .error("The demo analysis failed. Please try again.")
+                state = .error(message: "The demo analysis failed. Please try again.", image: nil)
             }
         }
     }
@@ -93,7 +96,7 @@ final class ScanViewModel {
         guard let apiKey = keyStore.currentKey() else {
             // Unreachable through the UI (no Analyze button without a key),
             // but stays honest if ever called directly.
-            state = .error(DetectionError.missingAPIKey.userMessage)
+            state = .error(message: DetectionError.missingAPIKey.userMessage, image: image)
             return
         }
         let service = liveService(apiKey)
@@ -109,12 +112,20 @@ final class ScanViewModel {
                 // Superseded by a newer action, which already updated the state.
             } catch let error as DetectionError {
                 guard !Task.isCancelled else { return }
-                state = .error(error.userMessage)
+                state = .error(message: error.userMessage, image: image)
             } catch {
                 guard !Task.isCancelled else { return }
-                state = .error("The analysis failed. Please try again.")
+                state = .error(message: "The analysis failed. Please try again.", image: image)
             }
         }
+    }
+
+    /// Re-runs the failed analysis with the retained photo — no need to pick
+    /// or capture the image again after a transient failure.
+    func retryAnalysis() {
+        guard case .error(_, .some(let image)) = state else { return }
+        state = .photoReady(image)
+        analyzePhoto()
     }
 
     /// Accepts a camera capture. From here on the image is indistinguishable
@@ -134,7 +145,7 @@ final class ScanViewModel {
                 guard let data = try await item.loadTransferable(type: Data.self),
                       let image = await Self.decodeImage(from: data) else {
                     guard !Task.isCancelled else { return }
-                    state = .error("That photo couldn't be loaded. Try choosing a different one.")
+                    state = .error(message: "That photo couldn't be loaded. Try choosing a different one.", image: nil)
                     return
                 }
                 guard !Task.isCancelled else { return }
@@ -143,7 +154,7 @@ final class ScanViewModel {
                 // Superseded by a newer action, which already updated the state.
             } catch {
                 guard !Task.isCancelled else { return }
-                state = .error("That photo couldn't be loaded. Try choosing a different one.")
+                state = .error(message: "That photo couldn't be loaded. Try choosing a different one.", image: nil)
             }
         }
     }

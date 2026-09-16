@@ -81,6 +81,14 @@ struct GeminiRequestTests {
         #expect(request.value(forHTTPHeaderField: "x-goog-api-key") == apiKey)
     }
 
+    @Test func requestsCarryExplicitTimeouts() throws {
+        let detection = try GeminiDetectionService.makeRequest(imageData: Data([0x01]), apiKey: apiKey)
+        #expect(detection.timeoutInterval == GeminiDetectionService.detectionTimeout)
+
+        let validation = GeminiDetectionService.makeValidationRequest(apiKey: apiKey)
+        #expect(validation.timeoutInterval == GeminiDetectionService.validationTimeout)
+    }
+
     @Test func validationRequestCarriesNoBodyAndNoKeyInURL() throws {
         let request = GeminiDetectionService.makeValidationRequest(apiKey: apiKey)
 

@@ -38,27 +38,84 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
 
     private let apiKey: String
     private let session: URLSession
+    /// Injectable so retry tests don't wait in real time. The production
+    /// default is `Task.sleep`, which is cancellation-aware.
+    private let sleep: @Sendable (Duration) async throws -> Void
 
-    init(apiKey: String, session: URLSession = .shared) {
+    init(
+        apiKey: String,
+        session: URLSession = .shared,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
         self.apiKey = apiKey
         self.session = session
+        self.sleep = sleep
     }
+
+    // MARK: - Retry policy (detection requests only)
+
+    /// Bounded retry for transient detection failures: one initial attempt
+    /// plus up to two retries. Applies only to `detectObjects` — Test
+    /// Connection stays deliberately single-attempt.
+    static let maxAttempts = 3
+    /// Exponential fallback when no usable Retry-After arrives: 1 s before
+    /// the first retry, 2 s before the second.
+    static let baseRetryDelay: Duration = .seconds(1)
+    /// Ceiling on any automatic wait, including a server-provided
+    /// Retry-After — the UI must never sit frozen for minutes on a header's
+    /// say-so.
+    static let maxRetryDelay: Duration = .seconds(10)
+
+    /// Per-request timeouts: detection uploads an image and waits for
+    /// analysis; validation is a tiny metadata GET.
+    static let detectionTimeout: TimeInterval = 60
+    static let validationTimeout: TimeInterval = 15
 
     func detectObjects(in imageData: Data) async throws -> [DetectedObject] {
         let request = try Self.makeRequest(imageData: imageData, apiKey: apiKey)
-        let data = try await send(request)
-        return try Self.detections(fromResponseData: data)
+
+        var attempt = 1
+        while true {
+            do {
+                let data = try await send(request)
+                // Decode/mapping failures throw plain DetectionError below,
+                // which deliberately never retries: HTTP success with
+                // unusable output isn't a transient transport problem.
+                return try Self.detections(fromResponseData: data)
+            } catch let failure as AttemptFailure {
+                guard failure.error.isTransient, attempt < Self.maxAttempts else {
+                    throw failure.error
+                }
+                // Cancellation-aware backoff: a cancelled sleep throws, so no
+                // further attempt is ever made after cancellation.
+                try await sleep(Self.retryDelay(afterAttempt: attempt, retryAfter: failure.retryAfter))
+                attempt += 1
+            }
+        }
     }
 
     /// Minimal credential/model-access check for Settings' Save & Test and
     /// Test Connection: fetches metadata for the exact model VisionBox uses
     /// (`models.get`). Authenticates the key and confirms model access
     /// without generating anything — no tokens consumed, no image sent.
+    /// One tap → one attempt; diagnostics never auto-retry.
     func validateKey() async throws {
-        _ = try await send(Self.makeValidationRequest(apiKey: apiKey))
+        do {
+            _ = try await send(Self.makeValidationRequest(apiKey: apiKey))
+        } catch let failure as AttemptFailure {
+            throw failure.error
+        }
     }
 
-    /// Shared transport: sends one request, translates cancellation and
+    /// One attempt's failure: the classified error plus the server's
+    /// Retry-After, kept separate so retry decisions rest on status/header
+    /// semantics — never on parsing user-facing strings.
+    struct AttemptFailure: Error {
+        let error: DetectionError
+        let retryAfter: Duration?
+    }
+
+    /// One transport attempt: sends the request, translates cancellation and
     /// transport failures, and maps HTTP status codes to typed errors.
     private func send(_ request: URLRequest) async throws -> Data {
         let data: Data
@@ -70,16 +127,40 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
             // so callers can treat it like any other Swift cancellation.
             throw CancellationError()
         } catch let error as URLError {
-            throw DetectionError.network(error.code)
+            throw AttemptFailure(error: .network(error.code), retryAfter: nil)
         } catch {
-            throw DetectionError.network(nil)
+            throw AttemptFailure(error: .network(nil), retryAfter: nil)
         }
 
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let httpResponse = response as? HTTPURLResponse
+        let statusCode = httpResponse?.statusCode ?? 0
         if let error = Self.error(forStatusCode: statusCode, body: data) {
-            throw error
+            throw AttemptFailure(error: error, retryAfter: Self.retryAfter(from: httpResponse))
         }
         return data
+    }
+
+    /// Numeric Retry-After seconds, if present and valid. The HTTP-date form
+    /// is deliberately unsupported: Google documents no Retry-After contract
+    /// ("wait and retry after a short period"), so this is opportunistic
+    /// standard-HTTP behavior — and the retry loop caps whatever arrives.
+    static func retryAfter(from response: HTTPURLResponse?) -> Duration? {
+        guard let value = response?.value(forHTTPHeaderField: "Retry-After"),
+              let seconds = Double(value.trimmingCharacters(in: .whitespaces)),
+              seconds > 0 else {
+            return nil
+        }
+        return .seconds(seconds)
+    }
+
+    /// Delay before the next attempt: a capped server-provided Retry-After
+    /// when available, otherwise capped exponential backoff (1 s, 2 s, …).
+    static func retryDelay(afterAttempt attempt: Int, retryAfter: Duration?) -> Duration {
+        if let retryAfter {
+            return min(retryAfter, maxRetryDelay)
+        }
+        let exponential = baseRetryDelay * (1 << max(attempt - 1, 0))
+        return min(exponential, maxRetryDelay)
     }
 
     // MARK: - Request construction
@@ -87,6 +168,7 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
     static func makeRequest(imageData: Data, apiKey: String) throws -> URLRequest {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        request.timeoutInterval = detectionTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
 
@@ -108,6 +190,7 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
         var request = URLRequest(
             url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model)")!
         )
+        request.timeoutInterval = validationTimeout
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         return request
     }
