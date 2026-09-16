@@ -117,6 +117,14 @@ final class ScanViewModel {
         }
     }
 
+    /// Accepts a camera capture. From here on the image is indistinguishable
+    /// from a Photos selection — same `photoReady` state, same analysis path.
+    func setCapturedImage(_ image: UIImage) {
+        analysisTask?.cancel()
+        analysisTask = nil
+        state = .photoReady(image)
+    }
+
     /// Loads and decodes a Photos selection into the `photoReady` state.
     func loadPhoto(_ item: PhotosPickerItem) {
         analysisTask?.cancel()
