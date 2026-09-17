@@ -143,6 +143,16 @@ final class ScanViewModel {
         state = .photoReady(image)
     }
 
+    /// Shutter flow: capture → analyze immediately when a key is configured;
+    /// without one, the capture is retained in the existing setup-required
+    /// state so configuring a key doesn't cost another capture.
+    func analyzeCapturedImage(_ image: UIImage) {
+        setCapturedImage(image)
+        if isLiveAnalysisAvailable {
+            analyzePhoto()
+        }
+    }
+
     /// Loads and decodes a Photos selection into the `photoReady` state.
     func loadPhoto(_ item: PhotosPickerItem) {
         analysisTask?.cancel()

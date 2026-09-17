@@ -40,7 +40,7 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
     /// variants, never two duplicated prompts.
     static func identificationInstruction(for detail: DetectionDetail) -> String {
         switch detail {
-        case .standard:
+        case .generic:
             """
             Identify each object with a concise, useful general product or \
             object name, such as "Game Controller" or "Power Bank".
@@ -76,7 +76,7 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
 
     init(
         apiKey: String,
-        detail: DetectionDetail = .standard,
+        detail: DetectionDetail = .generic,
         session: URLSession = .shared,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
@@ -204,7 +204,7 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
     static func makeRequest(
         imageData: Data,
         apiKey: String,
-        detail: DetectionDetail = .standard
+        detail: DetectionDetail = .generic
     ) throws -> URLRequest {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"

@@ -91,7 +91,7 @@ struct ScanViewModelTests {
         ScanViewModel(
             demoService: demo,
             keyStore: keyStore ?? GeminiKeyStore(previewKey: nil),
-            settings: settings ?? DetectionSettings(previewDetail: .standard),
+            settings: settings ?? DetectionSettings(previewDetail: .generic),
             liveService: { _, _ in live },
             state: state
         )
@@ -193,7 +193,7 @@ struct ScanViewModelTests {
         let viewModel = ScanViewModel(
             demoService: DemoDetectionService(),
             keyStore: keyStore,
-            settings: DetectionSettings(previewDetail: .standard),
+            settings: DetectionSettings(previewDetail: .generic),
             liveService: recorder.factory,
             state: .photoReady(tinyImage())
         )
@@ -208,7 +208,7 @@ struct ScanViewModelTests {
     }
 
     @Test func analysisUsesTheCurrentDetectionDetail() async {
-        let settings = DetectionSettings(previewDetail: .standard)
+        let settings = DetectionSettings(previewDetail: .generic)
         let recorder = LiveServiceRecorder(service: SucceedingService(objects: []))
         let viewModel = ScanViewModel(
             demoService: DemoDetectionService(),
@@ -230,7 +230,7 @@ struct ScanViewModelTests {
     @Test func tryAgainUsesTheDetectionDetailCurrentAtRetryTime() async {
         // Try Again is a new user-initiated analysis: a Settings change made
         // after the failure applies to it.
-        let settings = DetectionSettings(previewDetail: .standard)
+        let settings = DetectionSettings(previewDetail: .generic)
         let recorder = LiveServiceRecorder(service: DetectionErrorService(error: .server(statusCode: 503)))
         let viewModel = ScanViewModel(
             demoService: DemoDetectionService(),
@@ -242,13 +242,13 @@ struct ScanViewModelTests {
 
         viewModel.analyzePhoto()
         await viewModel.analysisTask?.value
-        #expect(recorder.requestedDetails == [.standard])
+        #expect(recorder.requestedDetails == [.generic])
 
         settings.detectionDetail = .detailed
         viewModel.retryAnalysis()
         await viewModel.analysisTask?.value
 
-        #expect(recorder.requestedDetails == [.standard, .detailed])
+        #expect(recorder.requestedDetails == [.generic, .detailed])
     }
 
     // MARK: - Camera capture
@@ -286,6 +286,42 @@ struct ScanViewModelTests {
             Issue.record("Expected .photoReady after cancelled task finished, got \(viewModel.state)")
             return
         }
+    }
+
+    @Test func shutterCaptureWithAKeyAnalyzesImmediately() async {
+        let expected = DemoScene.desk.detections
+        let viewModel = makeViewModel(
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            live: SucceedingService(objects: expected)
+        )
+
+        viewModel.analyzeCapturedImage(tinyImage())
+        guard case .analyzing = viewModel.state else {
+            Issue.record("Expected .analyzing straight from capture, got \(viewModel.state)")
+            return
+        }
+
+        await viewModel.analysisTask?.value
+        guard case .results(_, let objects) = viewModel.state else {
+            Issue.record("Expected .results, got \(viewModel.state)")
+            return
+        }
+        #expect(objects == expected)
+    }
+
+    @Test func shutterCaptureWithoutAKeyRetainsThePhotoInSetupState() {
+        let viewModel = makeViewModel(keyStore: GeminiKeyStore(previewKey: nil))
+
+        let captured = tinyImage()
+        viewModel.analyzeCapturedImage(captured)
+
+        // The capture is kept in photoReady (the Set Up Gemini state), so
+        // configuring a key doesn't cost another capture.
+        guard case .photoReady(let image) = viewModel.state else {
+            Issue.record("Expected .photoReady, got \(viewModel.state)")
+            return
+        }
+        #expect(image === captured)
     }
 
     @Test func capturedImageUsesTheSameAnalysisPathAsPhotosSelections() async {
@@ -338,7 +374,7 @@ struct ScanViewModelTests {
         let viewModel = ScanViewModel(
             demoService: DemoDetectionService(),
             keyStore: keyStore,
-            settings: DetectionSettings(previewDetail: .standard),
+            settings: DetectionSettings(previewDetail: .generic),
             liveService: recorder.factory,
             state: .photoReady(tinyImage())
         )
