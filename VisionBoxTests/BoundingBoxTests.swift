@@ -95,4 +95,49 @@ struct BoundingBoxTests {
         #expect([large, small].object(at: point) == small)
         #expect([small, large].object(at: point) == small)
     }
+
+    // MARK: - Rendered-space hit testing with minimum touch targets
+
+    private let renderedSize = CGSize(width: 400, height: 400)
+
+    @Test func tinyBoxGetsAMinimumHitTarget() {
+        // Rendered at 400×400 this box is only 4 pt wide; its hit area
+        // expands to 44 pt so it stays tappable.
+        let tiny = DetectedObject(
+            label: "Coin",
+            boundingBox: BoundingBox(x: 0.5, y: 0.5, width: 0.01, height: 0.01)
+        )
+
+        let nearMiss = CGPoint(x: 0.5 * 400 + 17, y: 0.5 * 400)
+        #expect([tiny].object(at: nearMiss, renderedSize: renderedSize) == tiny)
+
+        let farMiss = CGPoint(x: 0.5 * 400 + 60, y: 0.5 * 400)
+        #expect([tiny].object(at: farMiss, renderedSize: renderedSize) == nil)
+    }
+
+    @Test func largeBoxHitAreaIsNotExpanded() {
+        // Rendered span: 80...320 on both axes — a point just outside misses.
+        let bigBox = DetectedObject(
+            label: "Table",
+            boundingBox: BoundingBox(x: 0.2, y: 0.2, width: 0.6, height: 0.6)
+        )
+        #expect([bigBox].object(at: CGPoint(x: 330, y: 200), renderedSize: renderedSize) == nil)
+        #expect([bigBox].object(at: CGPoint(x: 300, y: 200), renderedSize: renderedSize) == bigBox)
+    }
+
+    @Test func expandedTargetsPreserveSmallestAreaWins() {
+        let bigBox = DetectedObject(
+            label: "Notebook",
+            boundingBox: BoundingBox(x: 0.2, y: 0.2, width: 0.6, height: 0.6)
+        )
+        let tiny = DetectedObject(
+            label: "Coin",
+            boundingBox: BoundingBox(x: 0.5, y: 0.5, width: 0.01, height: 0.01)
+        )
+        // Inside the big box AND inside the tiny box's expanded target:
+        // the smaller actual box still wins, in either array order.
+        let point = CGPoint(x: 0.5 * 400 + 12, y: 0.5 * 400 + 8)
+        #expect([bigBox, tiny].object(at: point, renderedSize: renderedSize) == tiny)
+        #expect([tiny, bigBox].object(at: point, renderedSize: renderedSize) == tiny)
+    }
 }

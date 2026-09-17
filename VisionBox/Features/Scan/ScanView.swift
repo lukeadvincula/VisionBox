@@ -26,7 +26,7 @@ struct ScanView: View {
             viewModel: ScanViewModel(
                 demoService: dependencies.demoDetectionService,
                 keyStore: dependencies.geminiKeyStore,
-                liveService: dependencies.liveDetectionService
+                liveService: { dependencies.liveDetectionService(apiKey: $0) }
             ),
             dependencies: dependencies
         )
@@ -181,9 +181,13 @@ struct ScanView: View {
     private func photoReadyView(_ image: UIImage) -> some View {
         ScrollView {
             VStack(spacing: 16) {
+                // Cap tall portrait previews so the primary actions stay in
+                // reach on compact screens; the full image (uncropped, fitted)
+                // is what analysis uses regardless.
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
+                    .frame(maxHeight: 420)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 if viewModel.isLiveAnalysisAvailable {
@@ -271,6 +275,7 @@ struct ScanView: View {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
+                        .frame(maxHeight: 420)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .opacity(0.7)
 
@@ -405,6 +410,16 @@ private func previewViewModel(
             dependencies: previewDependencies(keyConfigured: true)
         )
     }
+}
+
+#Preview("Idle, accessibility type") {
+    NavigationStack {
+        ScanView(
+            viewModel: previewViewModel(keyConfigured: false, state: .idle),
+            dependencies: previewDependencies(keyConfigured: false)
+        )
+    }
+    .environment(\.dynamicTypeSize, .accessibility2)
 }
 
 #Preview("Photo load error") {
