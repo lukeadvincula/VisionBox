@@ -138,15 +138,10 @@ private struct DetectedObjectRow: View {
                     .frame(minWidth: 22, minHeight: 22)
                     .background(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary), in: .circle)
 
-                VStack(alignment: .leading) {
-                    Text(object.label)
-                        .foregroundStyle(.primary)
-                    if let category = object.category {
-                        Text(category)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                // Deliberately minimal: number + name. Long Detailed names
+                // ("DualSense Wireless Controller") wrap rather than truncate.
+                Text(object.label)
+                    .foregroundStyle(.primary)
 
                 Spacer()
 
@@ -164,13 +159,10 @@ private struct DetectedObjectRow: View {
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
     }
 
-    /// One coherent announcement instead of badge/label/category/percent as
-    /// separate fragments.
+    /// One coherent announcement instead of badge/label/percent as separate
+    /// fragments.
     private var accessibilityDescription: String {
         var parts = ["\(number), \(object.label)"]
-        if let category = object.category {
-            parts.append(category)
-        }
         if let confidence = object.confidence {
             parts.append("\(confidence.formatted(.percent.precision(.fractionLength(0)))) confidence")
         }
@@ -211,6 +203,34 @@ private struct DetectedObjectRow: View {
 #Preview("No detections") {
     NavigationStack {
         ResultsView(image: DemoScene.desk.image ?? UIImage(), objects: [])
+    }
+}
+
+#Preview("Detailed-style long names") {
+    // Verifies that long Detailed identifications wrap rather than truncate.
+    NavigationStack {
+        ResultsView(
+            image: DemoScene.desk.image ?? UIImage(),
+            objects: [
+                DetectedObject(
+                    id: UUID(uuidString: "00000000-0000-0000-0000-000000000901")!,
+                    label: "DualSense Wireless Controller",
+                    confidence: 0.93,
+                    boundingBox: BoundingBox(x: 0.30, y: 0.28, width: 0.34, height: 0.42)
+                ),
+                DetectedObject(
+                    id: UUID(uuidString: "00000000-0000-0000-0000-000000000902")!,
+                    label: "KeySmart Classic Key Organizer",
+                    confidence: 0.81,
+                    boundingBox: BoundingBox(x: 0.08, y: 0.55, width: 0.20, height: 0.28)
+                ),
+                DetectedObject(
+                    id: UUID(uuidString: "00000000-0000-0000-0000-000000000903")!,
+                    label: "Anker 737 Power Bank",
+                    boundingBox: BoundingBox(x: 0.70, y: 0.54, width: 0.11, height: 0.17)
+                ),
+            ]
+        )
     }
 }
 

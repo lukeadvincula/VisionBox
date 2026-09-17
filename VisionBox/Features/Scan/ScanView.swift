@@ -26,7 +26,8 @@ struct ScanView: View {
             viewModel: ScanViewModel(
                 demoService: dependencies.demoDetectionService,
                 keyStore: dependencies.geminiKeyStore,
-                liveService: { dependencies.liveDetectionService(apiKey: $0) }
+                settings: dependencies.detectionSettings,
+                liveService: { dependencies.liveDetectionService(apiKey: $0, detail: $1) }
             ),
             dependencies: dependencies
         )
@@ -337,7 +338,10 @@ struct ScanView: View {
 // prompts (the camera path only runs from an explicit Take Photo tap).
 
 private func previewDependencies(keyConfigured: Bool) -> AppDependencies {
-    AppDependencies(geminiKeyStore: GeminiKeyStore(previewKey: keyConfigured ? "preview-key" : nil))
+    AppDependencies(
+        geminiKeyStore: GeminiKeyStore(previewKey: keyConfigured ? "preview-key" : nil),
+        detectionSettings: DetectionSettings(previewDetail: .standard)
+    )
 }
 
 private func previewViewModel(
@@ -347,7 +351,8 @@ private func previewViewModel(
     ScanViewModel(
         demoService: DemoDetectionService(),
         keyStore: GeminiKeyStore(previewKey: keyConfigured ? "preview-key" : nil),
-        liveService: { _ in DemoDetectionService() },
+        settings: DetectionSettings(previewDetail: .standard),
+        liveService: { _, _ in DemoDetectionService() },
         state: state
     )
 }

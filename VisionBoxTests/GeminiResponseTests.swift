@@ -93,18 +93,18 @@ struct GeminiResponseTests {
     // MARK: - Decoding and mapping
 
     @Test func decodesAndMapsMultipleObjects() throws {
+        // The first fixture object carries an extra, unrequested "category"
+        // field — Codable must ignore unknown fields rather than fail.
         let objects = try GeminiDetectionService.detections(fromResponseData: Fixture.twoObjects)
         #expect(objects.count == 2)
 
         let mug = try #require(objects.first)
         #expect(mug.label == "Coffee Mug")
-        #expect(mug.category == "Kitchenware")
         #expect(mug.confidence == nil)
         // box_2d [100, 200, 300, 400] is [ymin, xmin, ymax, xmax] / 1000:
         expectBox(mug.boundingBox, x: 0.2, y: 0.1, width: 0.2, height: 0.2)
 
         let laptop = objects[1]
-        #expect(laptop.category == nil)
         expectBox(laptop.boundingBox, x: 0.5, y: 0.05, width: 0.45, height: 0.6)
     }
 

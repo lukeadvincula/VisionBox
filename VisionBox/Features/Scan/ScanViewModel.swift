@@ -38,18 +38,25 @@ final class ScanViewModel {
     /// Shared observable credential state; availability comes from here
     /// without any Keychain access during view updates.
     private let keyStore: GeminiKeyStore
-    /// Builds a live service for the current key. Called fresh at analyze
-    /// time, so a replaced key is always the one used — no stale service.
-    private let liveService: (String) -> any ObjectDetectionService
+    /// Shared detection preferences, read at analyze time.
+    private let settings: DetectionSettings
+    /// Builds a live service for the current key and detail level. Called
+    /// fresh at analyze time, so a replaced key or changed Detection Detail
+    /// applies to the next user-initiated analysis — including Try Again —
+    /// while automatic retries inside a running analysis keep the level the
+    /// analysis started with.
+    private let liveService: (String, DetectionDetail) -> any ObjectDetectionService
 
     init(
         demoService: any ObjectDetectionService,
         keyStore: GeminiKeyStore,
-        liveService: @escaping (String) -> any ObjectDetectionService,
+        settings: DetectionSettings,
+        liveService: @escaping (String, DetectionDetail) -> any ObjectDetectionService,
         state: State = .idle
     ) {
         self.demoService = demoService
         self.keyStore = keyStore
+        self.settings = settings
         self.liveService = liveService
         self.state = state
     }
@@ -99,7 +106,7 @@ final class ScanViewModel {
             state = .error(message: DetectionError.missingAPIKey.userMessage, image: image)
             return
         }
-        let service = liveService(apiKey)
+        let service = liveService(apiKey, settings.detectionDetail)
         analysisTask?.cancel()
         state = .analyzing(image)
         analysisTask = Task {

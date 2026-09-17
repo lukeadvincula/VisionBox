@@ -17,12 +17,16 @@ struct AppDependencies {
     /// Demo Mode's zero-key detection service.
     var demoDetectionService: any ObjectDetectionService = DemoDetectionService()
 
-    /// A live Gemini service for the given key. Constructed fresh per
-    /// analysis so a replaced key is always the one used — no stale service
-    /// ever holds an old credential. The Gemini service itself never touches
-    /// the Keychain.
-    func liveDetectionService(apiKey: String) -> any ObjectDetectionService {
-        GeminiDetectionService(apiKey: apiKey)
+    /// Non-sensitive detection preferences (Detection Detail), shared by
+    /// Settings (writes) and Scan (reads at analyze time).
+    var detectionSettings = DetectionSettings()
+
+    /// A live Gemini service for the given key and detail level. Constructed
+    /// fresh per analysis so a replaced key or changed preference is always
+    /// the one used — no stale service. The Gemini service itself never
+    /// touches the Keychain or UserDefaults.
+    func liveDetectionService(apiKey: String, detail: DetectionDetail) -> any ObjectDetectionService {
+        GeminiDetectionService(apiKey: apiKey, detail: detail)
     }
 
     /// Minimal credential/model-access validation for Settings.

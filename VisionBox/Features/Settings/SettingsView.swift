@@ -5,21 +5,24 @@
 
 import SwiftUI
 
-/// BYOK settings: add, test, edit, and remove the user's Gemini API key.
-/// The key itself is never displayed once stored — only a masked placeholder.
+/// BYOK settings plus detection preferences. The API key is never displayed
+/// once stored — only a masked placeholder.
 struct SettingsView: View {
+    private let settings: DetectionSettings
     @State private var viewModel: SettingsViewModel
     @Environment(\.dismiss) private var dismiss
 
     init(dependencies: AppDependencies) {
-        self.init(viewModel: SettingsViewModel(
+        self.settings = dependencies.detectionSettings
+        self.viewModel = SettingsViewModel(
             keyStore: dependencies.geminiKeyStore,
-            validator: dependencies.validateAPIKey
-        ))
+            validator: { try await dependencies.validateAPIKey($0) }
+        )
     }
 
     /// Lets previews start from a specific state.
-    init(viewModel: SettingsViewModel) {
+    init(viewModel: SettingsViewModel, settings: DetectionSettings) {
+        self.settings = settings
         self.viewModel = viewModel
     }
 
@@ -31,6 +34,7 @@ struct SettingsView: View {
             } else {
                 keyEntrySection
             }
+            detectionDetailSection
             getKeySection
             demoModeSection
         }
@@ -134,6 +138,29 @@ struct SettingsView: View {
         }
     }
 
+    private var detectionDetailSection: some View {
+        Section {
+            Picker("Detection Detail", selection: Bindable(settings).detectionDetail) {
+                Text("Standard").tag(DetectionDetail.standard)
+                Text("Detailed").tag(DetectionDetail.detailed)
+            }
+            .pickerStyle(.segmented)
+        } header: {
+            Text("Detection Detail")
+        } footer: {
+            Text(detectionDetailDescription)
+        }
+    }
+
+    private var detectionDetailDescription: String {
+        switch settings.detectionDetail {
+        case .standard:
+            "Identifies the general product or object — for example, Game Controller. Applies to Gemini analysis of your photos; Demo Mode's sample results are unaffected."
+        case .detailed:
+            "Identifies brand, model, color, or variant when the photo visibly supports it — for example, DualSense Wireless Controller. Applies to Gemini analysis of your photos; Demo Mode's sample results are unaffected."
+        }
+    }
+
     private var getKeySection: some View {
         Section {
             Link(destination: URL(string: "https://aistudio.google.com/apikey")!) {
@@ -155,73 +182,93 @@ struct SettingsView: View {
 }
 
 // MARK: - Previews
-// All previews use in-memory key stores and no-op validators: no Keychain
-// writes, no networking, no real keys.
+// All previews use in-memory key stores/settings and no-op validators:
+// no Keychain access, no UserDefaults writes, no networking, no real keys.
 
 #Preview("First setup") {
     NavigationStack {
-        SettingsView(viewModel: SettingsViewModel(
-            keyStore: GeminiKeyStore(previewKey: nil),
-            validator: { _ in }
-        ))
+        SettingsView(
+            viewModel: SettingsViewModel(
+                keyStore: GeminiKeyStore(previewKey: nil),
+                validator: { _ in }
+            ),
+            settings: DetectionSettings(previewDetail: .standard)
+        )
     }
 }
 
-#Preview("Configured") {
+#Preview("Configured, Standard detail") {
     NavigationStack {
-        SettingsView(viewModel: SettingsViewModel(
-            keyStore: GeminiKeyStore(previewKey: "preview-key"),
-            validator: { _ in }
-        ))
+        SettingsView(
+            viewModel: SettingsViewModel(
+                keyStore: GeminiKeyStore(previewKey: "preview-key"),
+                validator: { _ in }
+            ),
+            settings: DetectionSettings(previewDetail: .standard)
+        )
+    }
+}
+
+#Preview("Configured, Detailed detail") {
+    NavigationStack {
+        SettingsView(
+            viewModel: SettingsViewModel(
+                keyStore: GeminiKeyStore(previewKey: "preview-key"),
+                validator: { _ in }
+            ),
+            settings: DetectionSettings(previewDetail: .detailed)
+        )
     }
 }
 
 #Preview("Testing") {
     NavigationStack {
-        SettingsView(viewModel: SettingsViewModel(
-            keyStore: GeminiKeyStore(previewKey: "preview-key"),
-            validator: { _ in },
-            status: .testing
-        ))
+        SettingsView(
+            viewModel: SettingsViewModel(
+                keyStore: GeminiKeyStore(previewKey: "preview-key"),
+                validator: { _ in },
+                status: .testing
+            ),
+            settings: DetectionSettings(previewDetail: .standard)
+        )
     }
 }
 
 #Preview("Connected") {
     NavigationStack {
-        SettingsView(viewModel: SettingsViewModel(
-            keyStore: GeminiKeyStore(previewKey: "preview-key"),
-            validator: { _ in },
-            status: .connected
-        ))
+        SettingsView(
+            viewModel: SettingsViewModel(
+                keyStore: GeminiKeyStore(previewKey: "preview-key"),
+                validator: { _ in },
+                status: .connected
+            ),
+            settings: DetectionSettings(previewDetail: .standard)
+        )
     }
 }
 
 #Preview("Invalid key") {
     NavigationStack {
-        SettingsView(viewModel: SettingsViewModel(
-            keyStore: GeminiKeyStore(previewKey: "preview-key"),
-            validator: { _ in },
-            status: .failed("Invalid API key")
-        ))
-    }
-}
-
-#Preview("Connection failure") {
-    NavigationStack {
-        SettingsView(viewModel: SettingsViewModel(
-            keyStore: GeminiKeyStore(previewKey: "preview-key"),
-            validator: { _ in },
-            status: .failed("Could not connect — check your internet connection")
-        ))
+        SettingsView(
+            viewModel: SettingsViewModel(
+                keyStore: GeminiKeyStore(previewKey: "preview-key"),
+                validator: { _ in },
+                status: .failed("Invalid API key")
+            ),
+            settings: DetectionSettings(previewDetail: .standard)
+        )
     }
 }
 
 #Preview("Editing key") {
     NavigationStack {
-        SettingsView(viewModel: SettingsViewModel(
-            keyStore: GeminiKeyStore(previewKey: "preview-key"),
-            validator: { _ in },
-            isEditingKey: true
-        ))
+        SettingsView(
+            viewModel: SettingsViewModel(
+                keyStore: GeminiKeyStore(previewKey: "preview-key"),
+                validator: { _ in },
+                isEditingKey: true
+            ),
+            settings: DetectionSettings(previewDetail: .standard)
+        )
     }
 }

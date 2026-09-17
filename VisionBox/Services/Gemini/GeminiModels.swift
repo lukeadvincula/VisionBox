@@ -61,8 +61,8 @@ nonisolated struct GeminiInteractionRequest: Encodable {
         static let detectionList = ResponseFormat(schema: DetectionListSchema())
     }
 
-    /// JSON Schema for the detection list: an array of
-    /// `{label, box_2d[, category]}` objects.
+    /// JSON Schema for the detection list: an array of `{label, box_2d}`
+    /// objects — exactly the fields VisionBox consumes, nothing more.
     struct DetectionListSchema: Encodable {
         let type = "array"
         let items = Items()
@@ -74,11 +74,10 @@ nonisolated struct GeminiInteractionRequest: Encodable {
 
             struct Properties: Encodable {
                 let label = StringProperty()
-                let category = StringProperty()
                 let box2D = BoxProperty()
 
                 enum CodingKeys: String, CodingKey {
-                    case label, category
+                    case label
                     case box2D = "box_2d"
                 }
             }
@@ -147,13 +146,14 @@ nonisolated struct GoogleErrorEnvelope: Decodable {
 
 /// One detection as Gemini reports it: `box_2d` is `[ymin, xmin, ymax, xmax]`
 /// normalized to 0–1000. This convention never leaves the Gemini layer.
+/// Only the fields VisionBox consumes are declared — any extra fields the
+/// model might emit are ignored by Codable.
 nonisolated struct GeminiDetection: Decodable {
     let label: String
-    let category: String?
     let box2D: [Double]
 
     enum CodingKeys: String, CodingKey {
-        case label, category
+        case label
         case box2D = "box_2d"
     }
 }
