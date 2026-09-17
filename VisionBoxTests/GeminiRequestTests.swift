@@ -61,7 +61,7 @@ struct GeminiRequestTests {
         return try #require(input.first { $0["type"] as? String == "text" }?["text"] as? String)
     }
 
-    @Test(arguments: [DetectionDetail.standard, .detailed])
+    @Test(arguments: [DetectionDetail.generic, .detailed])
     func promptPinsTheCoordinateConventionInBothModes(detail: DetectionDetail) throws {
         let request = try GeminiDetectionService.makeRequest(
             imageData: Data([0x01]),
@@ -83,7 +83,7 @@ struct GeminiRequestTests {
         let standard = try GeminiDetectionService.makeRequest(
             imageData: Data([0x01]),
             apiKey: apiKey,
-            detail: .standard
+            detail: .generic
         )
         let standardPrompt = try prompt(from: standard)
         #expect(standardPrompt.contains("general product or object name"))
@@ -123,7 +123,7 @@ struct GeminiRequestTests {
         }
 
         // Detection Detail changes only the prompt — never the schema.
-        #expect(try responseFormat(for: .standard) == responseFormat(for: .detailed))
+        #expect(try responseFormat(for: .generic) == responseFormat(for: .detailed))
     }
 
     @Test func apiKeyNeverAppearsInTheBody() throws {

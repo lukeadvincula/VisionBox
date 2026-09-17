@@ -9,8 +9,8 @@ import Observation
 /// The user's detection preferences — ordinary, non-sensitive settings.
 ///
 /// Backed by UserDefaults (the Keychain remains exclusively for the Gemini
-/// API key). Observable and shared via `AppDependencies`, so a change in
-/// Settings applies to the next analysis immediately, no restart.
+/// API key). Observable and shared via `AppDependencies`, so changing the
+/// mode on the Scan screen applies to the next analysis immediately.
 @MainActor @Observable
 final class DetectionSettings {
 
@@ -27,9 +27,7 @@ final class DetectionSettings {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        // Absent, unknown, or corrupt stored values fall back to Standard.
-        self.detectionDetail = defaults.string(forKey: Self.detailKey)
-            .flatMap(DetectionDetail.init(rawValue:)) ?? .standard
+        self.detectionDetail = Self.detail(fromStored: defaults.string(forKey: Self.detailKey))
     }
 
     /// In-memory settings for previews and unit tests: fixed starting value,
@@ -37,5 +35,15 @@ final class DetectionSettings {
     init(previewDetail: DetectionDetail) {
         self.defaults = nil
         self.detectionDetail = previewDetail
+    }
+
+    /// Absent, unknown, or corrupt stored values fall back to Generic.
+    /// "standard" was Generic's raw value in pre-release development builds;
+    /// mapping it here is the whole migration.
+    private static func detail(fromStored rawValue: String?) -> DetectionDetail {
+        if rawValue == "standard" {
+            return .generic
+        }
+        return rawValue.flatMap(DetectionDetail.init(rawValue:)) ?? .generic
     }
 }

@@ -17,9 +17,12 @@ struct AppDependencies {
     /// Demo Mode's zero-key detection service.
     var demoDetectionService: any ObjectDetectionService = DemoDetectionService()
 
-    /// Non-sensitive detection preferences (Detection Detail), shared by
-    /// Settings (writes) and Scan (reads at analyze time).
+    /// Non-sensitive detection preferences (Detection Detail), selected on
+    /// the Scan screen and read at analyze time.
     var detectionSettings = DetectionSettings()
+
+    /// One-time Scan discoverability flags (intro card, demo pill).
+    var onboardingHints = OnboardingHints()
 
     /// A live Gemini service for the given key and detail level. Constructed
     /// fresh per analysis so a replaced key or changed preference is always
