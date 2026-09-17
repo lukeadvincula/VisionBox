@@ -22,21 +22,53 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
 
     private static let endpoint = URL(string: "https://generativelanguage.googleapis.com/v1beta/interactions")!
 
-    /// The prompt pins Gemini's spatial convention explicitly — the model is
-    /// never left to guess the box format.
+    /// The base prompt pins the detection task and Gemini's spatial
+    /// convention explicitly — the model is never left to guess the box
+    /// format. Object detection stays the primary task in both detail modes;
+    /// only the identification instruction below varies.
     static let detectionPrompt = """
         Detect the prominent physical objects in this image. For each object \
-        return a short descriptive label (one to four words), an optional \
-        general category (such as Electronics, Kitchenware, Furniture, \
-        Clothing, Food, Plant, Accessories), and its bounding box. The \
-        bounding box must be "box_2d": [ymin, xmin, ymax, xmax], with each \
-        coordinate normalized to 0-1000 relative to the image size. Treat \
-        each physically separate object as its own entry. Do not include \
+        return a short descriptive label and its bounding box. The bounding \
+        box must be "box_2d": [ymin, xmin, ymax, xmax], with each coordinate \
+        normalized to 0-1000 relative to the image size. Treat each \
+        physically separate object as its own entry. Do not include \
         reflections, shadows, or background surfaces such as walls, floors, \
         or countertops.
         """
 
+    /// The per-mode identification suffix — one base prompt, two small
+    /// variants, never two duplicated prompts.
+    static func identificationInstruction(for detail: DetectionDetail) -> String {
+        switch detail {
+        case .standard:
+            """
+            Identify each object with a concise, useful general product or \
+            object name, such as "Game Controller" or "Power Bank".
+            """
+        case .detailed:
+            """
+            Identify each object as specifically as the visible evidence \
+            supports: include the brand, product line, model, edition, \
+            color, or variant when it is reliably identifiable from logos, \
+            printed text, packaging, or distinctive product design — for \
+            example "DualSense Wireless Controller" instead of "Game \
+            Controller". Never guess or invent details the image does not \
+            clearly support; when uncertain, fall back to the more general \
+            name.
+            """
+        }
+    }
+
+    static func prompt(for detail: DetectionDetail) -> String {
+        detectionPrompt + " " + identificationInstruction(for: detail)
+    }
+
     private let apiKey: String
+    /// Fixed per instance: a fresh service is constructed for each analysis
+    /// with the preference current at that moment, so automatic retries
+    /// inside one analysis always use the same detail level, while the next
+    /// user-initiated analysis picks up any Settings change.
+    private let detail: DetectionDetail
     private let session: URLSession
     /// Injectable so retry tests don't wait in real time. The production
     /// default is `Task.sleep`, which is cancellation-aware.
@@ -44,10 +76,12 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
 
     init(
         apiKey: String,
+        detail: DetectionDetail = .standard,
         session: URLSession = .shared,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.apiKey = apiKey
+        self.detail = detail
         self.session = session
         self.sleep = sleep
     }
@@ -72,7 +106,9 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
     static let validationTimeout: TimeInterval = 15
 
     func detectObjects(in imageData: Data) async throws -> [DetectedObject] {
-        let request = try Self.makeRequest(imageData: imageData, apiKey: apiKey)
+        // Built once, before the retry loop: every automatic retry resends
+        // this exact request, detail level included.
+        let request = try Self.makeRequest(imageData: imageData, apiKey: apiKey, detail: detail)
 
         var attempt = 1
         while true {
@@ -165,7 +201,11 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
 
     // MARK: - Request construction
 
-    static func makeRequest(imageData: Data, apiKey: String) throws -> URLRequest {
+    static func makeRequest(
+        imageData: Data,
+        apiKey: String,
+        detail: DetectionDetail = .standard
+    ) throws -> URLRequest {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = detectionTimeout
@@ -176,7 +216,7 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
             model: model,
             input: [
                 .image(mimeType: "image/jpeg", base64Data: imageData.base64EncodedString()),
-                .text(detectionPrompt),
+                .text(prompt(for: detail)),
             ],
             responseFormat: .detectionList
         )
@@ -275,7 +315,6 @@ nonisolated struct GeminiDetectionService: ObjectDetectionService {
 
         return DetectedObject(
             label: wire.label,
-            category: wire.category,
             // The detection API provides no calibrated confidence; nil is
             // honest, and the UI already treats confidence as optional.
             confidence: nil,

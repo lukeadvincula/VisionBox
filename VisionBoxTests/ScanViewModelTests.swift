@@ -59,18 +59,21 @@ private actor FlakyOnceService: ObjectDetectionService {
     }
 }
 
-/// Records which API keys the live-service factory was asked for.
+/// Records which API keys and detail levels the live-service factory was
+/// asked for.
 @MainActor
 private final class LiveServiceRecorder {
     private(set) var requestedKeys: [String] = []
+    private(set) var requestedDetails: [DetectionDetail] = []
     private let service: any ObjectDetectionService
 
     init(service: any ObjectDetectionService) {
         self.service = service
     }
 
-    func factory(_ key: String) -> any ObjectDetectionService {
+    func factory(_ key: String, _ detail: DetectionDetail) -> any ObjectDetectionService {
         requestedKeys.append(key)
+        requestedDetails.append(detail)
         return service
     }
 }
@@ -81,13 +84,15 @@ struct ScanViewModelTests {
     private func makeViewModel(
         demo: any ObjectDetectionService = DemoDetectionService(),
         keyStore: GeminiKeyStore? = nil,
+        settings: DetectionSettings? = nil,
         live: any ObjectDetectionService = SucceedingService(objects: []),
         state: ScanViewModel.State = .idle
     ) -> ScanViewModel {
         ScanViewModel(
             demoService: demo,
             keyStore: keyStore ?? GeminiKeyStore(previewKey: nil),
-            liveService: { _ in live },
+            settings: settings ?? DetectionSettings(previewDetail: .standard),
+            liveService: { _, _ in live },
             state: state
         )
     }
@@ -188,6 +193,7 @@ struct ScanViewModelTests {
         let viewModel = ScanViewModel(
             demoService: DemoDetectionService(),
             keyStore: keyStore,
+            settings: DetectionSettings(previewDetail: .standard),
             liveService: recorder.factory,
             state: .photoReady(tinyImage())
         )
@@ -199,6 +205,50 @@ struct ScanViewModelTests {
         await viewModel.analysisTask?.value
 
         #expect(recorder.requestedKeys == ["second-key"])
+    }
+
+    @Test func analysisUsesTheCurrentDetectionDetail() async {
+        let settings = DetectionSettings(previewDetail: .standard)
+        let recorder = LiveServiceRecorder(service: SucceedingService(objects: []))
+        let viewModel = ScanViewModel(
+            demoService: DemoDetectionService(),
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            settings: settings,
+            liveService: recorder.factory,
+            state: .photoReady(tinyImage())
+        )
+
+        // The user switches to Detailed in Settings before analyzing.
+        settings.detectionDetail = .detailed
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+
+        #expect(recorder.requestedDetails == [.detailed])
+    }
+
+    @Test func tryAgainUsesTheDetectionDetailCurrentAtRetryTime() async {
+        // Try Again is a new user-initiated analysis: a Settings change made
+        // after the failure applies to it.
+        let settings = DetectionSettings(previewDetail: .standard)
+        let recorder = LiveServiceRecorder(service: DetectionErrorService(error: .server(statusCode: 503)))
+        let viewModel = ScanViewModel(
+            demoService: DemoDetectionService(),
+            keyStore: GeminiKeyStore(previewKey: "test-key"),
+            settings: settings,
+            liveService: recorder.factory,
+            state: .photoReady(tinyImage())
+        )
+
+        viewModel.analyzePhoto()
+        await viewModel.analysisTask?.value
+        #expect(recorder.requestedDetails == [.standard])
+
+        settings.detectionDetail = .detailed
+        viewModel.retryAnalysis()
+        await viewModel.analysisTask?.value
+
+        #expect(recorder.requestedDetails == [.standard, .detailed])
     }
 
     // MARK: - Camera capture
@@ -288,6 +338,7 @@ struct ScanViewModelTests {
         let viewModel = ScanViewModel(
             demoService: DemoDetectionService(),
             keyStore: keyStore,
+            settings: DetectionSettings(previewDetail: .standard),
             liveService: recorder.factory,
             state: .photoReady(tinyImage())
         )

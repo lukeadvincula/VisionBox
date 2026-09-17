@@ -7,23 +7,25 @@ import CoreGraphics
 import Foundation
 
 /// A single object detected in an analyzed image.
+///
+/// Deliberately minimal: a name and a box. Detection Detail (Standard vs
+/// Detailed) changes only how specific `label` is — there is no category or
+/// other product metadata, because VisionBox is a detection showcase, not an
+/// inventory app.
 nonisolated struct DetectedObject: Identifiable, Equatable, Sendable {
     let id: UUID
     var label: String
-    var category: String?
     var confidence: Double?
     var boundingBox: BoundingBox
 
     init(
         id: UUID = UUID(),
         label: String,
-        category: String? = nil,
         confidence: Double? = nil,
         boundingBox: BoundingBox
     ) {
         self.id = id
         self.label = label
-        self.category = category
         self.confidence = confidence
         self.boundingBox = boundingBox
     }
