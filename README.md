@@ -1,30 +1,17 @@
+# VisionBox
+
 **Detect and identify multiple objects from a single photo.**
 
-VisionBox is a small, focused SwiftUI app: point the camera at a scene (or pick
-a photo), and Google's Gemini vision model detects the visible objects -
-returning bounding boxes drawn over the image and a synchronized, tappable
-result list. One image in, every recognizable object out.
+VisionBox is a focused SwiftUI app for detecting objects in images. Point the
+camera at a scene or choose a photo, and Google's Gemini vision model identifies
+visible objects, draws bounding boxes over the image, and presents a
+synchronized, interactive result list.
 
-Built as a portfolio demonstration of a complete camera → AI vision → adaptive
-UI pipeline: SwiftUI, AVFoundation, Swift Concurrency, structured LLM output,
-and a bring-your-own-key Gemini integration - with zero third-party
+It uses a native iOS camera and UI stack, direct Gemini integration with
+structured output, and a bring-your-own-key approach with no third-party
 dependencies.
 
 ## Screenshots
-
-<!--
-SCREENSHOT TODO:
-Add these files to docs/images/:
-- scan-camera.png
-- scan-photo-ready.png
-- results-generic.png
-- results-detailed.png
-- results-selection.png
-- results-list.png
-- settings.png
-
-After adding them, uncomment the screenshot gallery below.
--->
 
 <table>
   <tr>
@@ -65,52 +52,63 @@ After adding them, uncomment the screenshot gallery below.
   </tr>
 </table>
 
-## What VisionBox Does
+## Video Demo
 
-Camera / Photos / Demo Mode → Gemini vision → structured detections →
-normalized bounding boxes → synchronized Results UI.
+<table>
+  <tr>
+    <td align="center">
+      <sub>VisionBox in Action</sub>
+    </td>
+  </tr>
+</table>
 
-- **Camera-first scanning** - the home screen is a live camera view with a
-  shutter; capture goes straight into analysis.
-- **Multiple objects from one image** - a single request returns every
-  detected object with a label and a bounding box.
-- **Generic and Detailed detection** - choose concise object names or
-  evidence-based brand/model identification, right on the Scan screen.
-- **Bounding boxes + synchronized selection** - tap a box to highlight its
-  row, tap a row to highlight its box; boxes stay aligned at any size.
-- **Photos support** - analyze any image from your library instead of the
-  camera.
-- **Demo Mode** - the full experience with bundled scenes, no key or network.
-- **BYOK** - you supply your own Gemini API key; it's stored in the Keychain
-  and never leaves the device except to authenticate with Google.
-- **Resilient networking** - transient Gemini failures retry automatically
-  with bounded backoff; a clear Try Again path covers the rest.
+https://github.com/user-attachments/assets/92c84e4f-5bd8-4f9e-a566-a6981332616a
+## Features
+
+- **Camera-first scanning** — capture a scene and send it directly for analysis.
+- **Multi-object detection** — identify multiple visible objects from a single
+  image with a label and bounding box for each detection.
+- **Generic and Detailed detection** — choose between concise object names and
+  more specific identification when visual evidence supports it.
+- **Interactive bounding boxes** — selecting a detection in the image highlights
+  its result, and selecting a result highlights its bounding box.
+- **Photos support** — analyze an existing image using the system Photos picker.
+- **Demo Mode** — explore the complete detection and results experience without
+  an API key, network connection, or physical camera.
+- **Bring your own key** — configure a Gemini API key stored securely in the
+  iOS Keychain.
+- **Resilient networking** — transient Gemini failures use bounded automatic
+  retries, with a manual Try Again path for recoverable failures.
 
 ## Demo Mode
 
-You can evaluate the entire UI **without a Gemini API key, network access, or
-a physical camera**. Tap the ✨ button on the Scan screen (it introduces
-itself on launch), pick one of the bundled scenes, and VisionBox runs the full
-analyze → boxes → synchronized results flow against deterministic local
-fixtures. Demo Mode never calls Gemini.
+Demo Mode lets you explore VisionBox without configuring Gemini or using a
+physical camera.
+
+Tap the ✨ button on the Scan screen and choose one of the bundled scenes.
+VisionBox runs the same detection-results flow using deterministic local
+fixtures, including bounding boxes and synchronized selection.
+
+Demo Mode makes no network requests.
 
 ## Generic vs Detailed
 
-A segmented control on the Scan screen picks the identification style for the
-next analysis:
+The Scan screen provides two identification modes:
 
-- **Generic** - concise, general object names ("game controller", "wrist
-  watch").
-- **Detailed** - attempts brand, product line, model, edition, color, or
-  variant when those details are reliably visible in the image. The prompt
-  explicitly instructs the model never to invent details the image doesn't
-  support - when uncertain, it falls back to the more general name.
+- **Generic** — returns concise, general object names such as
+  `Game Controller` or `Wrist Watch`.
+- **Detailed** — attempts to identify visible brand, product line, model,
+  edition, color, or variant information when the image provides enough
+  evidence.
+
+Detailed mode is instructed not to invent unsupported details. When specific
+identification is uncertain, it falls back to a more general name.
 
 ## Architecture
 
-Deliberately small: SwiftUI views, one view model, and a service protocol with
-two implementations. No repositories, coordinators, DI frameworks, or
-third-party dependencies.
+VisionBox intentionally uses a small architecture:
+
+**SwiftUI → ViewModel → ObjectDetectionService → Gemini**
 
 ```mermaid
 flowchart TD
@@ -123,75 +121,73 @@ flowchart TD
     G --> H[ResultsView + DetectionOverlay<br/>synchronized selection]
 ```
 
-Key pieces:
+### Key Components
 
-- **`ScanView` / `ScanViewModel`** - the camera-first home screen and a single
-  state machine (idle → photo ready → analyzing → results/error) driving
-  every acquisition path.
-- **`CameraSession` / `CameraPreview`** - a minimal AVFoundation stack:
-  observable session lifecycle on a serial queue, `AVCaptureVideoPreviewLayer`
-  preview, async still capture.
-- **`ObjectDetectionService`** - one protocol; `GeminiDetectionService` (live)
-  and `DemoDetectionService` (bundled fixtures) are interchangeable.
-- **`GeminiDetectionService`** - direct `URLSession` calls to the Gemini API
-  with structured JSON output, response validation, bounding-box
-  normalization/clamping, and bounded retry with `Retry-After` support.
-- **`ImageProcessing` / `ImageGeometry`** - EXIF orientation normalization,
-  upload downscaling, and pure normalized-rect math shared by overlay
-  rendering and hit testing.
-- **`GeminiKeyStore` / `KeychainService`** - observable key availability
-  backed by the iOS Keychain.
-- **`DetectionSettings` / `OnboardingHints`** - small observable
-  UserDefaults-backed stores for the Generic/Detailed preference and one-time
-  hints.
+- **`ScanView` / `ScanViewModel`** — drives image acquisition, analysis state,
+  errors, and results.
+- **`CameraSession` / `CameraPreview`** — provides the AVFoundation camera
+  session, live preview, and still-image capture.
+- **`ObjectDetectionService`** — shared interface implemented by the live
+  Gemini service and local Demo Mode service.
+- **`GeminiDetectionService`** — communicates directly with Gemini using
+  `URLSession`, structured responses, validation, and bounded retry behavior.
+- **`ImageProcessing` / `ImageGeometry`** — handles image orientation,
+  downscaling, normalized geometry, overlay rendering, and hit testing.
+- **`GeminiKeyStore` / `KeychainService`** — stores and exposes Gemini API-key
+  availability using the iOS Keychain.
+- **`DetectionSettings`** — persists the Generic/Detailed detection preference.
 
-## Gemini Setup (Bring Your Own Key)
+The project uses no third-party dependencies or additional architectural
+frameworks.
 
-VisionBox does not ship with an API key. Live detection talks **directly to
-Google's Gemini API** from the device - there is no VisionBox backend.
+## Gemini Setup
 
-1. Get a free Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
-2. Launch VisionBox and open **Settings** (gear, top right).
-3. Paste the key and tap **Save & Test** - VisionBox validates it against the
-   Gemini API.
-4. The key is stored in the iOS Keychain (this-device-only). You can **Test
-   Connection**, **Edit**, or **Remove** it any time.
-5. Return to Scan and capture or choose a photo.
+VisionBox does not include an API key. Live detection communicates directly
+with Google's Gemini API from the device.
 
-Never commit an API key to a repository - VisionBox keeps it out of source,
-logs, and URLs by design (it's sent only in the request header to Google).
+1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
+2. Launch VisionBox and open **Settings**.
+3. Enter the key and tap **Save & Test**.
+4. Return to Scan and capture or choose a photo.
+
+The key is stored using the iOS Keychain with
+`WhenUnlockedThisDeviceOnly` accessibility. Settings also lets you test the
+connection, edit the key, or remove it.
+
+Never commit API keys to source control.
 
 ## Privacy
 
-- The Gemini API key is stored in the iOS Keychain
-  (`WhenUnlockedThisDeviceOnly`) - never in UserDefaults, files, or logs.
-- Captured and selected images are transient: analyzed in memory, never saved
-  to Photos or disk by the app.
-- Image data leaves the device only when you run a live analysis, and goes
-  directly to Google's Gemini API (with storage of the interaction disabled in
-  the request).
-- Demo Mode performs no network requests.
-- No analytics, tracking, or third-party SDKs.
+- Gemini API keys are stored in the iOS Keychain, not UserDefaults or files.
+- Captured and selected images are processed transiently and are not saved to
+  Photos or persisted by VisionBox.
+- Images are sent to Google's Gemini API only when performing live analysis.
+- Demo Mode makes no network requests.
+- VisionBox contains no analytics, tracking, or third-party SDKs.
 
 ## Technology
 
-- Swift & SwiftUI
-- Swift Concurrency (async/await, actors)
-- AVFoundation (camera capture)
+- Swift
+- SwiftUI
+- Swift Concurrency (`async`/`await`)
+- AVFoundation
 - PhotosUI (`PhotosPicker`)
 - Keychain Services
-- Google Gemini API (structured JSON output)
+- URLSession
+- Google Gemini API
 - Swift Testing
 
 ## Requirements
 
-- Xcode 27 (or newer)
+- Xcode 27 or newer
 - iOS 27.0+
-- Live camera scanning needs a physical device; in the Simulator, Photos and
-  Demo Mode provide the full experience.
-- A Gemini API key for live detection (Demo Mode needs none).
+- Physical iPhone for live camera capture
+- Gemini API key for live detection
 
-## Running the Project
+Photos and Demo Mode can be used in the Simulator without a physical camera or
+Gemini API key.
+
+## Running VisionBox
 
 ```bash
 git clone <repository-url>
@@ -199,23 +195,35 @@ cd VisionBox
 open VisionBox.xcodeproj
 ```
 
-Select the VisionBox scheme and run. No dependency installation - there are no
-third-party packages.
+Select the **VisionBox** scheme and run the project.
+
+There are no external packages or dependency-installation steps.
 
 ## Testing
 
-A Swift Testing unit suite (145 tests) covers the view model state machine,
-bounding-box math and hit testing, image processing, Gemini request/response
-handling, retry/backoff behavior, Keychain-backed key storage, and the demo
-fixtures. Networking is tested against a stubbed `URLProtocol` - no live calls.
+VisionBox includes unit tests covering:
 
-Run with **Product → Test** in Xcode. There is no UI-test coverage; the suite
-is unit tests only.
+- Scan state and analysis flow
+- Bounding-box geometry and hit testing
+- Image processing
+- Gemini request and response handling
+- Retry and recovery behavior
+- Keychain-backed credential storage
+- Demo Mode fixtures
 
-## Limitations & Scope
+Networking tests use a stubbed `URLProtocol` and do not make live Gemini
+requests.
 
-- Identification quality depends on what's visibly recognizable. Detailed
-  mode only names brands/models it can support with visual evidence.
-- Overlapping or ambiguous objects can affect detection and box placement.
-- This is a portfolio/demo app, not production computer vision: no result
-  persistence, history, or export.
+Run the suite with **Product → Test** in Xcode.
+
+## Scope
+
+VisionBox is intentionally focused on image acquisition, object detection, and
+interactive results.
+
+It does not include inventory management, saved scans, result history, cloud
+sync, accounts, or export.
+
+Detection accuracy depends on the contents and quality of the source image.
+Occluded, overlapping, or visually ambiguous objects may affect identification
+and bounding-box placement.
