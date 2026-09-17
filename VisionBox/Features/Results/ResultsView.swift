@@ -63,6 +63,12 @@ struct ResultsView: View {
                 // it maps directly to rendered image coordinates.
                 DetectionOverlay(objects: objects, selectedObjectID: $selectedObjectID)
             }
+            // The overlay is accessibility-hidden (the list is the accessible
+            // selection surface); the image announces a summary instead.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(objects.isEmpty
+                ? "Analyzed photo, no objects detected"
+                : "Analyzed photo, \(objects.count) detected objects marked with numbered boxes")
             .frame(maxHeight: narrowImageMaxHeight)
             .padding()
     }
@@ -129,7 +135,7 @@ private struct DetectedObjectRow: View {
                 Text("\(number)")
                     .font(.caption.bold())
                     .foregroundStyle(.background)
-                    .frame(width: 22, height: 22)
+                    .frame(minWidth: 22, minHeight: 22)
                     .background(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary), in: .circle)
 
                 VStack(alignment: .leading) {
@@ -152,7 +158,23 @@ private struct DetectedObjectRow: View {
             }
         }
         .listRowBackground(isSelected ? Color.accentColor.opacity(0.12) : nil)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityHint("Highlights this object's numbered box on the photo")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
+    }
+
+    /// One coherent announcement instead of badge/label/category/percent as
+    /// separate fragments.
+    private var accessibilityDescription: String {
+        var parts = ["\(number), \(object.label)"]
+        if let category = object.category {
+            parts.append(category)
+        }
+        if let confidence = object.confidence {
+            parts.append("\(confidence.formatted(.percent.precision(.fractionLength(0)))) confidence")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -190,4 +212,11 @@ private struct DetectedObjectRow: View {
     NavigationStack {
         ResultsView(image: DemoScene.desk.image ?? UIImage(), objects: [])
     }
+}
+
+#Preview("Narrow, accessibility type") {
+    NavigationStack {
+        ResultsView(image: DemoScene.desk.image ?? UIImage(), objects: DemoScene.desk.detections)
+    }
+    .environment(\.dynamicTypeSize, .accessibility2)
 }
